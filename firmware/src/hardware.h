@@ -17,6 +17,14 @@
 #define HARDWARE_H
 #include "types.h"
 
+#define USE_PLL
+
+void hw_init(void);
+
+/* -------------------------------------------------------------------------- */
+/*                     STM32G0  memory mapped peripherals                     */
+/* -------------------------------------------------------------------------- */
+
 /* Peripherals mapped on AHB bus */
 #define DMA1   0x40020000
 #define DMA2   0x40020400
@@ -40,6 +48,7 @@
 #define SPI2   0x40003800
 #define SPI3   0x40003C00
 #define USART2 0x40004400
+#define PWR    0x40007000
 #define SPI1   0x40013000
 /* Ports mapped on IOPORT bus */
 #define GPIOA  0x50000000
@@ -61,12 +70,29 @@
 #define GPIO_AFRH(x)    (x + 0x24)
 #define GPIO_BRR(x)     (x + 0x28)
 
-#define RCC_IOPRSTR (RCC + 0x24)
-#define RCC_IOPENR  (RCC + 0x34)
-#define RCC_APBENR1 (RCC + 0x3C)
-#define RCC_APBENR2 (RCC + 0x40)
-
-void hw_init(void);
+#define RCC_CR        (RCC + 0x00)
+#define RCC_ICSCR     (RCC + 0x04)
+#define RCC_CFGR      (RCC + 0x08)
+#define RCC_PLL_CFGR  (RCC + 0x0C)
+#define RCC_CRRCR     (RCC + 0x14)
+#define RCC_CIER      (RCC + 0x18)
+#define RCC_CIFR      (RCC + 0x1C)
+#define RCC_CICR      (RCC + 0x20)
+#define RCC_IOPRSTR   (RCC + 0x24)
+#define RCC_AHBRSTR   (RCC + 0x28)
+#define RCC_APBRSTR1  (RCC + 0x2C)
+#define RCC_APBRSTR2  (RCC + 0x30)
+#define RCC_IOPENR    (RCC + 0x34)
+#define RCC_APBENR1   (RCC + 0x3C)
+#define RCC_APBENR2   (RCC + 0x40)
+#define RCC_IOPSMENR  (RCC + 0x44)
+#define RCC_AHBSMENR  (RCC + 0x48)
+#define RCC_APBSMENR1 (RCC + 0x4C)
+#define RCC_APBSMENR2 (RCC + 0x50)
+#define RCC_CCIPR     (RCC + 0x54)
+#define RCC_CCIPR2    (RCC + 0x58)
+#define RCC_BDCR      (RCC + 0x5C)
+#define RCC_CSR       (RCC + 0x60)
 
 
 /* -------------------------------------------------------------------------- */
@@ -158,8 +184,9 @@ inline void reg_clr(u32 addr, u32 value)
  */
 inline void reg16_clr(u32 addr, u16 value)
 {
-	*(volatile u16 *)addr = ( *(volatile u16 *)addr & ~value );
+	*(volatile u16 *)addr = (u16)( *(volatile u16 *)addr & ~value );
 }
+
 /**
  * @brief Modify a 8 bits memory mapped register by clearing some bits
  *
@@ -168,7 +195,7 @@ inline void reg16_clr(u32 addr, u16 value)
  */
 inline void reg8_clr(u32 addr, u8 value)
 {
-	*(volatile u8 *)addr = ( *(volatile u8 *)addr & ~value );
+	*(volatile u8 *)addr = (u8)( *(volatile u8 *)addr & ~value );
 }
 
 /**

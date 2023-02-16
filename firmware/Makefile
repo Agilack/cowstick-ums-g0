@@ -23,6 +23,8 @@ ASRC = startup.s libasm.s
 CC = $(CROSS)gcc
 OC = $(CROSS)objcopy
 OD = $(CROSS)objdump
+GDB = $(CROSS)gdb
+OCD = openocd
 
 CFLAGS  = -mcpu=cortex-m0plus -mthumb
 CFLAGS += -nostdlib -Os -ffunction-sections
@@ -63,3 +65,18 @@ $(AOBJ) : $(BUILDDIR)/%.o : src/%.s
 $(COBJ) : $(BUILDDIR)/%.o: src/%.c
 	@echo "  [CC] $@"
 	@$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET).bin:
+	@echo ""
+	@echo "firmware.bin now available, please compile firmware first"
+	@echo ""
+	@false
+
+openocd:
+	$(OCD) -f scripts/openocd.cfg
+
+debug:
+	$(GDB) --command=scripts/gdb.cfg $(TARGET).elf
+
+load: $(TARGET).bin
+	$(OCD) -f scripts/openocd.cfg -c "mem_load ./$(TARGET).bin"

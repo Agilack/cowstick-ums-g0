@@ -24,7 +24,7 @@
  */
 void spi_init(void)
 {
-	u32 val;
+	u16 val;
 
 	/* Activate SPI1 */
 	reg_set((u32)RCC_APBENR2, (1 << 12));
@@ -32,7 +32,7 @@ void spi_init(void)
 	reg_set((u32)RCC_APBENR1, (1 << 14));
 
 	/* Configure SPI to work as master */
-	val  = (7 << 3); // Baudrate = f/256
+	val  = (7 << 3); // Baudrate = f/256 (slowest)
 	val |= (1 << 9); // Software Slave Management
 	val |= (1 << 8); // SSI
 	val |= (1 << 2); // Master mode
@@ -91,6 +91,40 @@ void spi_cs(uint channel, int state)
 			// TODO Notify error ?
 			break;
 	}
+}
+
+/**
+ * @brief Set the speed of one SPI channel
+ *
+ * @param channel ID of the channel to configure (1->3)
+ * @param speed   New speed to set (in MHz)
+ */
+void spi_set_speed(uint channel, uint speed)
+{
+	u32 port;
+	u16 val;
+
+	if ((channel == 1) || (channel == 2))
+		port = SPI1;
+	else if (channel == 3)
+		port = SPI2;
+	else
+		return;
+
+	/* Read the current port configuration */
+	val = reg16_rd(SPI_CR1(port));
+	/* Update the BaudRate divisor according to required speed */
+	val &= (u16)~(7 << 3);
+	if (speed >= 32)
+		val |= (u32)(0 << 3); // fPCLK/2
+	else if (speed >= 16)
+		val |= (u32)(1 << 3); // fPCLK/4
+	else if (speed >=  1)
+		val |= (u32)(5 << 3); // fPCLK/64
+	else
+		val |= (u32)(7 << 3); // fPCLK/256
+	/* Write back the control register */
+	reg16_wr(SPI_CR1(port), val);
 }
 
 u8 spi_rw(uint channel, u8 out)

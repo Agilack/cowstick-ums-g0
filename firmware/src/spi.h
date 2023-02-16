@@ -31,4 +31,6 @@ void spi_init(void);
 void spi_cs(uint channel, int state);
 u8   spi_rw(uint channel, u8 out);
 
+void spi_set_speed(uint channel, uint speed);
+
 #endif

@@ -71,7 +71,7 @@ int main(void)
 		/* LED on */
 		reg_wr(GPIOB + 0x18, (1 << 21));
 		/* Wait (short) */
-		for (i = 0; i < 0x20000; i++)
+		for (i = 0; i < 0x100000; i++)
 			asm volatile("nop");
 	}
 }
