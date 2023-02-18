@@ -18,6 +18,7 @@ CROSS    ?= arm-none-eabi-
 BUILDDIR ?= build
 
 SRC  = main.c hardware.c uart.c spi.c
+SRC += libc.c mem.c
 ASRC = startup.s libasm.s
 
 CC = $(CROSS)gcc
@@ -29,6 +30,7 @@ OCD = openocd
 CFLAGS  = -mcpu=cortex-m0plus -mthumb
 CFLAGS += -nostdlib -Os -ffunction-sections
 CFLAGS += -fno-builtin-memset -fno-builtin-memcpy
+CFLAGS += -Wall -Wextra -Wconversion
 CFLAGS += -g -DUART_FIFO_SW
 
 LDFLAGS = -nostartfiles -T src/cowstick-ums.ld -Wl,-Map=$(TARGET).map,--cref,--gc-sections -static

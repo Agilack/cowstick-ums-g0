@@ -14,8 +14,12 @@
  * This program is distributed WITHOUT ANY WARRANTY.
  */
 #include "hardware.h"
+#include "libc.h"
+#include "mem.h"
 #include "spi.h"
 #include "uart.h"
+
+void test_mem(void);
 
 /**
  * @brief Entry point of the C code
@@ -23,42 +27,40 @@
  */
 int main(void)
 {
-	int i;
+	uint i;
 
 	/* Initialize low-level hardware */
 	hw_init();
 	/* Initialize peripherals */
 	uart_init();
 	spi_init();
+	/* Initialize libraries */
+	mem_init();
 
 	uart_puts("--=={ Cowstick UMS }==--\r\n");
 
-	uart_puts("Detect memory slot #1 : ");
-	spi_cs(1, 1);
-	spi_rw(1, 0x9F); /* Read DeviceID */
-	uart_puthex(spi_rw(1, 0x00), 8);
-	uart_puthex(spi_rw(1, 0x00), 8);
-	uart_puthex(spi_rw(1, 0x00), 8);
-	spi_cs(1, 0);
-	uart_puts("\r\n");
+	mem_detect();
+	for (i = 0; i < MEM_NODE_COUNT; i++)
+	{
+		mem_node *node = mem_get_node(i);
+		if (node == 0)
+			break;
+		uart_puts("Memory slot #");
+		uart_putdec(i);
+		uart_puts(" : ");
+		if (node->type == 0)
+			uart_puts("Empty\r\n");
+		else if (node->type == 1)
+		{
+			const mem_flash_chip *fc;
+			uart_puts("FLASH ");
+			fc = (const mem_flash_chip *)node->chip;
+			uart_puts(fc->name);
+			uart_puts("\r\n");
+		}
+	}
 
-	uart_puts("Detect memory slot #2 : ");
-	spi_cs(2, 1);
-	spi_rw(2, 0x9F); /* Read DeviceID */
-	uart_puthex(spi_rw(2, 0x00), 8);
-	uart_puthex(spi_rw(2, 0x00), 8);
-	uart_puthex(spi_rw(2, 0x00), 8);
-	spi_cs(2, 0);
-	uart_puts("\r\n");
-
-	uart_puts("Detect memory slot #3 : ");
-	spi_cs(3, 1);
-	spi_rw(3, 0x9F); /* Read DeviceID */
-	uart_puthex(spi_rw(3, 0x00), 8);
-	uart_puthex(spi_rw(3, 0x00), 8);
-	uart_puthex(spi_rw(3, 0x00), 8);
-	spi_cs(3, 0);
-	uart_puts("\r\n");
+	test_mem();
 
 	/* LED blink infinite loop */
 	while(1)
@@ -74,5 +76,45 @@ int main(void)
 		for (i = 0; i < 0x100000; i++)
 			asm volatile("nop");
 	}
+}
+
+void test_mem(void)
+{
+	mem_node *node = mem_get_node(0);
+	uint i;
+
+	uart_puts("read() result=");
+	uart_putdec( (uint)mem_read(0, 0x000000, 512, 0) );
+	uart_puts("\r\n");
+	uart_dump(node->cache_buffer, 64);
+
+	memset(node->cache_buffer, 0, 4096);
+	mem_write(0, 0x000000, 512, 0);
+
+	uart_puts("read() result=");
+	uart_putdec( (uint)mem_read(0, 0x000000, 512, 0) );
+	uart_puts("\r\n");
+	uart_dump(node->cache_buffer, 64);
+
+	for (i = 0; i < 16; i++)
+	{
+		if (i & 1)
+			node->cache_buffer[i] = 0x55;
+		else
+			node->cache_buffer[i] = 0xAA;
+	}
+	mem_write(0, 0x000000, 512, 0);
+
+	uart_puts("read() result=");
+	uart_putdec( (uint)mem_read(0, 0x000000, 512, 0) );
+	uart_puts("\r\n");
+	uart_dump(node->cache_buffer, 64);
+
+	mem_erase(0, 0x000000, 512);
+
+	uart_puts("read() result=");
+	uart_putdec( (uint)mem_read(0, 0x000000, 512, 0) );
+	uart_puts("\r\n");
+	uart_dump(node->cache_buffer, 64);
 }
 /* EOF */
