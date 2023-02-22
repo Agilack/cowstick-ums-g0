@@ -17,7 +17,7 @@ TARGET   ?= firmware
 CROSS    ?= arm-none-eabi-
 BUILDDIR ?= build
 
-SRC  = main.c hardware.c uart.c spi.c
+SRC  = main.c hardware.c uart.c spi.c usb.c
 SRC += libc.c mem.c
 ASRC = startup.s libasm.s
 
@@ -82,3 +82,5 @@ debug:
 
 load: $(TARGET).bin
 	$(OCD) -f scripts/openocd.cfg -c "mem_load ./$(TARGET).bin"
+reboot: $(TARGET).bin
+	$(OCD) -f scripts/openocd.cfg -c "mcu_reboot"

@@ -18,6 +18,7 @@
 #include "mem.h"
 #include "spi.h"
 #include "uart.h"
+#include "usb.h"
 
 void test_mem(void);
 
@@ -59,12 +60,17 @@ int main(void)
 			uart_puts("\r\n");
 		}
 	}
+	usb_init();
+	usb_start();
 
+#ifdef TEST_MEM
 	test_mem();
-
+#endif
 	/* LED blink infinite loop */
 	while(1)
 	{
+		usb_periodic();
+#ifdef not_defined
 		/* LED off */
 		reg_wr(GPIOB + 0x18, (1 << 5));
 		/* Wait (long) */
@@ -75,9 +81,11 @@ int main(void)
 		/* Wait (short) */
 		for (i = 0; i < 0x100000; i++)
 			asm volatile("nop");
+#endif
 	}
 }
 
+#ifdef TEST_MEM
 void test_mem(void)
 {
 	mem_node *node = mem_get_node(0);
@@ -117,4 +125,5 @@ void test_mem(void)
 	uart_puts("\r\n");
 	uart_dump(node->cache_buffer, 64);
 }
+#endif
 /* EOF */

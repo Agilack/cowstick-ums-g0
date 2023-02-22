@@ -48,7 +48,11 @@ void hw_init(void);
 #define SPI2   0x40003800
 #define SPI3   0x40003C00
 #define USART2 0x40004400
+#define USB    0x40005C00
+#define CRS    0x40006C00
 #define PWR    0x40007000
+#define USB_R1 0x40009800
+#define USB_R2 0x40009C00
 #define SPI1   0x40013000
 /* Ports mapped on IOPORT bus */
 #define GPIOA  0x50000000

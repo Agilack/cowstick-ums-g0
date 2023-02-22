@@ -19,6 +19,7 @@ static inline void _init_clocks(void);
 static inline void _init_led(void);
 static inline void _init_spi(void);
 static inline void _init_uart(void);
+static inline void _init_usb(void);
 
 /**
  * @brief Initialize processor, clocks and some peripherals
@@ -42,6 +43,7 @@ void hw_init(void)
 	_init_led();
 	_init_uart();
 	_init_spi();
+	_init_usb();
 }
 
 /**
@@ -95,6 +97,24 @@ static inline void _init_clocks(void)
 	reg_set(RCC_CR, (1 << 22));
 	while( (reg_rd(RCC_CR) & (1 << 23)) == 0)
 		;
+	/* Activate CRS */
+	reg_set((u32)RCC_APBENR1, (1 << 16));
+	/* Reset CRS */
+	reg_set((u32)RCC_APBRSTR1, (1 << 16));
+	(void)reg_rd((u32)RCC_APBRSTR1);
+	reg_clr((u32)RCC_APBRSTR1, (1 << 16));
+	/* Configure CRS */
+	val = (2 << 28); // SYNC_SRC: USB SOF
+	val |= (47999 & 0xFFFF); // Reload value
+	val |= ( 22 << 16); // FELIM
+	reg_wr(CRS+0x04, val); // CRS_CFGR
+	/* Adjust TRIM */
+	val = reg_rd(CRS+0x00);
+	val &= ~(u32)(0x7F << 8);
+	val |=  (u32)(32   << 8);
+	reg_wr(CRS+0x00, val);
+	/* Enable Auto-Trim and Error counter*/
+	reg_set(CRS+0x00, (1 << 6) | (1 << 5));
 
 #ifdef USE_LSE
 	/* Activate power controller (PWR) */
@@ -248,6 +268,24 @@ static inline void _init_uart(void)
 	v = reg_rd(GPIO_MODER(GPIOA));
 	v &= ~(u32)( (3 << 4) | (3 << 6) );
 	v |=  (u32)( (2 << 4) | (2 << 6) );
+	reg_wr(GPIO_MODER(GPIOA), v);
+}
+
+static inline void _init_usb(void)
+{
+	u32 v;
+
+	/* Activate SYSCFG (to use PA11 PA12) */
+	reg_set(RCC_APBENR2, (1 << 0));
+
+#ifdef HW_RESTART
+	v = reg_rd(RCC_CCIPR2);
+	v &= ~(u32)(3 << 12); // 00 = HSI48
+	reg_wr(RCC_CCIPR2, v);
+#endif
+	/* Configure PA11 and PA12 as analog (USB pins use special functions) */
+	v = reg_rd(GPIO_MODER(GPIOA));
+	v |=  (u32)( (3 << 22) | (3 << 24) );
 	reg_wr(GPIO_MODER(GPIOA), v);
 }
 /* EOF */
