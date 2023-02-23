@@ -30,8 +30,9 @@ OCD = openocd
 CFLAGS  = -mcpu=cortex-m0plus -mthumb
 CFLAGS += -nostdlib -Os -ffunction-sections
 CFLAGS += -fno-builtin-memset -fno-builtin-memcpy
-CFLAGS += -Wall -Wextra -Wconversion
+CFLAGS += -Wall -Wextra -Wconversion -pedantic
 CFLAGS += -g -DUART_FIFO_SW
+#CFLAGS += -DUSB_DEBUG
 
 LDFLAGS = -nostartfiles -T src/cowstick-ums.ld -Wl,-Map=$(TARGET).map,--cref,--gc-sections -static
 
