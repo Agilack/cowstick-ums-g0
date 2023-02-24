@@ -15,6 +15,7 @@
  */
 #include "types.h"
 #include "uart.h"
+#include "usb_desc.h"
 #include "usb.h"
 
 #ifdef USB_DEBUG
@@ -28,7 +29,11 @@ static uint it_count;
 uint state = 0;
 uint dev_addr = 0;
 
-void ep0_desc(int num);
+static void ep0_config(void);
+static inline void ep0_get_descriptor(void);
+static inline void ep0_set_address(u32 hdr);
+static inline void ep0_set_configuration(u32 hdr);
+static void ep0_send(const u8 *data, unsigned int len);
 void memcpy_to_pma(u8 *dst, const u8 *src, unsigned int len);
 
 /**
@@ -39,8 +44,6 @@ void memcpy_to_pma(u8 *dst, const u8 *src, unsigned int len);
  */
 void usb_init(void)
 {
-	u8 *pma = (u8 *)USB_RAM;
-	u32 v;
 	int i;
 
 #ifdef USB_DEBUG
@@ -68,15 +71,6 @@ void usb_init(void)
 	for (i = 0; i < 0x4000; i++)
 		asm volatile("nop");
 
-	// Configure descriptors for EP0
-	*(u32*)(pma + 0) = (u32)((0 << 16) | 0x80);
-	*(u32*)(pma + 4) = (u32)((1 << 31) | (1 << 26) | (0 << 16) | 0x40);
-	// Set EP0 as control
-	v  = (1 << 9);  // UTYPE: Control
-	v |= (3 << 12); // STATRX: Valid (wait for rx)
-	v |= (2 <<  4); // STATTX: NAK
-	reg_wr(USB_CHEPxR(0), v);
-
 	/* Enable USB interrupt into NVIC */
 	reg_wr(0xE000E100, (1 << 8)); /* USB */
 
@@ -91,8 +85,10 @@ void usb_start(void)
 
 	/* Set device address to 0 */
 	reg_wr(USB_DADDR, (1 << 7));
+	/* Configure EP0 */
+	ep0_config();
 
-	// configure interrupts
+	/* Configure interrupts */
 	reg_wr(USB_ISTR, 0);
 	v = (1 << 10); // RST_DCOM
 	v |= (1 << 15); // CTR
@@ -100,42 +96,82 @@ void usb_start(void)
 	//v |= (1 << 11); // SUSP
 	reg_wr(USB_CNTR, v);
 
+	/* Activate pull up/down to D+/D- (bus connect) */
 	reg_wr(USB_BCDR, (1 << 15));
 
 	uart_puts("USB Started\r\n");
 }
 
+/**
+ * @brief Process periodic or asynchronous USB stuff
+ *
+ * Some USB functions need to be periodically processed or refreshed, and some
+ * other are asynchronous and their processing can be delayed. This function is
+ * here to process this kind of events.
+ */
 void usb_periodic(void)
 {
-/*	if (flag == 1)
-	{
-		flag = 2;
-		ep0_desc();
-	}
-*/
+	/* Nothing to do yet */
 }
 
-void ep0_config(uint tx_rdy)
+/**
+ * @brief Copy date to USB packet memory array
+ *
+ * The memory used by USB must be written only with 32bits words. As buffer of
+ * data to send are mainly byte arrays into main sram, they must be copied to
+ * usb ram. This function can be called to do a copy to usb memory.
+ */
+void memcpy_to_pma(u8 *dst, const u8 *src, unsigned int len)
 {
+	int i;
+	u32 v;
+
+	for (i = 0; len >= 4; i+=4, len -= 4)
+		*(volatile u32*)(dst + i) = *(u32 *)(src + i);
+
+	if (len > 0)
+	{
+		v = 0;
+		if (len > 3)
+			v |= (*(src + i + 3) << 24);
+		if (len > 2)
+			v |= (*(src + i + 2) << 16);
+		if (len > 1)
+			v |= (*(src + i + 1) <<  8);
+		v |= *(src + i);
+		*(volatile u32*)(dst + i) = v;
+	}
+}
+
+/* -------------------------------------------------------------------------- */
+/* --                                                                      -- */
+/* --                          Private  functions                          -- */
+/* --                                                                      -- */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * @brief Configure the control endpoint (EP0)
+ *
+ * The endpoint0 (EP0) should always be used as control endpoint for bus
+ * enumeration and device configuration. This function is used on startup and
+ * after a bus reset to prepare and enable EP0.
+ */
+static void ep0_config(void)
+{
+	u8 *pma = (u8 *)USB_RAM;
 	u32 cur, v;
 
-	*(u32*)(USB_RAM + 4) = (u32)((1 << 31) | (1 << 26) | (0 << 16) | 0x40);
+	/* Configure descriptors for EP0 */
+	*(u32*)(pma + 0) = (u32)((0 << 16) | 0x80);
+	*(u32*)(pma + 4) = (u32)((1 << 31) | (1 << 26) | (0 << 16) | 0x40);
 
 	cur = reg_rd(USB_CHEPxR(0));
 
 	v  = (1 << 9);  // UTYPE: Control
-	v ^= (3 << 12); // STATRX: Valid (wait for rx)
+	v |= (3 << 12); // STATRX: Valid (wait for rx)
 	if (cur & (1 << 14))
 		v |= (1 << 14);
-	if (tx_rdy)
-	{
-		v |= (3 <<  4); // STATTX: Valid
-		if (cur & (1 << 6))
-			v |= (1 << 6);
-	}
-	else
-		v |= (2 <<  4); // STATTX: NAK
-//	v |= (1 << 14) | (1 << 6);
+	v |= (2 <<  4); // STATTX: NAK
 	reg_wr(USB_CHEPxR(0), v);
 
 #ifdef USB_DEBUG
@@ -148,174 +184,172 @@ void ep0_config(uint tx_rdy)
 #endif
 }
 
-const u8 desc_device[] = {
-	18,   0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 64,
-	0x08, 0x36, 0x20, 0xC7, 0x01, 0x01, 0x01, 0x02,
-	0x00, 0x01 };
-
-const u8 desc_dev_qualifier[] = {
-	10,   0x06, 0x00, 0x02, 0x00, 0x00, 0x00, 64,
-	0x00, 0x00 };
-
-const u8 desc_cfg[] = {
-	/* ---- Configuration Descriptor ----*/
-	0x09, 0x02,   32, 0x00, 0x01, 0x01, 0x00, 0x80,
-	0xFA,
-	/* ---- Interface Descriptor ---- */
-	0x09, 0x04, 0x00, 0x00, 0x02, 0xFF, 0x00, 0x00,
-	0x00,
-	/* ---- Endpoint (01, Bulk IN) ---- */
-	0x07, 0x05, 0x81, 0x02, 0x40, 0x00, 0x01,
-	/* ---- Endpoint (02, Bulk OUT) ---- */
-	0x07, 0x05, 0x02, 0x02, 0x40, 0x00, 0x01,
-	/* Empty descriptor (End Of Descriptors marker) */
-	0x00, 0x00
-	};
-const u8 str_lang[] __attribute__((aligned(4))) = {
-	0x04, 0x03, 0x09, 0x04
-	};
-const u8 str_manuf[] __attribute__((aligned(4))) = {
-	16, 0x03,
-	'A',0x00, 'g',0x00, 'i',0x00, 'l',0x00,
-	'a',0x00, 'c',0x00, 'k',0x00
-};
-const u8 str_product[] __attribute__((aligned(4))) = {
-	26, 0x03,
-	'C',0x00, 'o',0x00, 'w',0x00, 's',0x00,
-	't',0x00, 'i',0x00, 'c',0x00, 'k',0x00,
-	'-',0x00, 'u',0x00, 'm',0x00, 's',0x00
-};
-
-void ep0_get_string(void)
+/**
+ * @brief Decode and process a GET_DESCRIPTOR request
+ *
+ * This function is called by the Endpoint-0 reception handler (ep0_rx) when a
+ * get descriptor request has been received. See ep0_rx() for more details.
+ */
+static inline void ep0_get_descriptor(void)
 {
-	u8 pkt_rx[8];
 	u8 *pma = (u8 *)USB_RAM;
-	u32 ep0r;
+	u8   pkt_rx[4];
+	u32  v;
+	uint len;
+	//uint wIndex; // Not used yet
+	uint wLength;
+
+	/* Read current EP0 RX buffer address */
+	v = (*(volatile u32*)(pma + 0x4) & 0xFFFF);
 
 	/* Copy received packet to a byte array */
-	*(u32 *)&pkt_rx[0] = *(volatile u32*)(pma + 0x40);
-	*(u32 *)&pkt_rx[4] = *(volatile u32*)(pma + 0x44);
+	*(u32 *)&pkt_rx[0] = *(volatile u32*)(pma + v);
+	v = *(volatile u32*)(pma + v + 4);
+	// wIndex  = (v & 0xFFFF); // Not used yet
+	wLength = ((v >> 16) & 0xFFFF);
 
-	/* String Descriptor */
-	if (pkt_rx[3] == 0x03)
+	/* Get: Device Descriptor */
+	if (pkt_rx[3] == 0x01)
 	{
+#ifdef USB_INFO
+		uart_puts("USB: Get Device Descriptor\r\n");
+#endif
+//		state = 2;
+		ep0_send(desc_device, desc_device[0]);
+	}
+	/* Get: Configuration descriptor */
+	else if (pkt_rx[3] == 0x02)
+	{
+#ifdef USB_INFO
+		uart_puts("USB: Get Configuration Descriptor (wLength=");
+		uart_putdec(wLength);
+		uart_puts(")\r\n");
+#endif
+		state = 3;
+		/* Get length of the descriptor */
+		len = sizeof(desc_cfg);
+		/* If this length is longer than data requested by host */
+		if (len > wLength)
+			/* Then, return no more than requested data */
+			len = wLength;
+		ep0_send(desc_cfg, len);
+	}
+	/* Get: Device Qualifier  */
+	else if (pkt_rx[3] == 0x06)
+	{
+#ifdef USB_INFO
+		uart_puts("USB: Get Device Qualifier\r\n");
+#endif
+		ep0_send(desc_dev_qualifier, desc_dev_qualifier[0]);
+		state = 5;
+	}
+	/* Get: String Descriptor */
+	else if (pkt_rx[3] == 0x03)
+	{
+#ifdef USB_INFO
+		uart_puts("USB: Get String Descriptor ");
+		uart_puthex(pkt_rx[2], 8);
+		uart_puts("\r\n");
+#endif
 		/* String index 0 : Lang */
 		if (pkt_rx[2] == 0x00)
-		{
-			memcpy_to_pma(pma + 0x80, str_lang, 4);
-			/* Update EP0 */
-			*(volatile u32*)(pma + 0) = (4 << 16) | 0x80;
-		}
+			ep0_send(usbdev_str_lang, usbdev_str_lang[0]);
 		/* String index 1 : Manufacturer */
 		else if (pkt_rx[2] == 0x01)
-		{
-			memcpy_to_pma(pma + 0x80, str_manuf, 16);
-			/* Update EP0 */
-			*(volatile u32*)(pma + 0) = (16 << 16) | 0x80;
-		}
+			ep0_send(usbdev_str_manuf, usbdev_str_manuf[0]);
 		/* String index 2 : Product */
 		else if (pkt_rx[2] == 0x02)
-		{
-			memcpy_to_pma(pma + 0x80, str_product, 26);
-			/* Update EP0 */
-			*(volatile u32*)(pma + 0) = (26 << 16) | 0x80;
-		}
+			ep0_send(usbdev_str_product, usbdev_str_product[0]);
 		else
-			return;
-		/* Update EP0 for IN transfer */
-		ep0r = reg_rd(USB_CHEPxR(0));
-		ep0r &= ~(u32)(0x7040);
-		ep0r |=  (u32)(1 << 15);
-		ep0r ^= (1 << 4);
-		ep0r ^= (1 << 5);
-		reg_wr(USB_CHEPxR(0), ep0r);
-		//uart_puts("USB: Get String Descriptor\r\n");
+			uart_puts("USB: Unknown String Descriptor index\r\n");
+	}
+	else
+	{
+		uart_puts("USB: GET_DESCRIPTOR (unknown) ");
+		uart_dump(pkt_rx, 4);
+		uart_puts("\r\n");
 	}
 }
 
-void ep0_desc(int num)
+/**
+ * @brief Decode and process a SET_ADDRESS transaction
+ *
+ * @param hdr First four bytes (header) of request
+ */
+static inline void ep0_set_address(u32 hdr)
 {
-	u32 ep0r;
-	u32 pma = USB_RAM;
-#ifdef USB_DEBUG
-	u32 readback;
-#endif
+	dev_addr = ((hdr >> 16) & 0x7F);
 
-	if (num == 1)
-	{
-		/* Copy payload */
-		*(volatile u32*)(pma + 0x80) = *(u32 *)&desc_device[0];
-		*(volatile u32*)(pma + 0x84) = *(u32 *)&desc_device[4];
-		*(volatile u32*)(pma + 0x88) = *(u32 *)&desc_device[8];
-		*(volatile u32*)(pma + 0x8C) = *(u32 *)&desc_device[12];
-		*(volatile u32*)(pma + 0x90) = *(u32 *)&desc_device[16];
-		/* Update EP0 */
-		*(volatile u32*)(pma + 0) = (18 << 16) | 0x80;
-	}
-	else if (num == 2)
-	{
-		u32 vext = *(volatile u32*)(pma + 0x44);
-		unsigned int wLength = (vext >> 16);
-		/* Copy Config descriptor into payload */
-		*(volatile u32*)(pma + 0x80) = *(u32 *)&desc_cfg[0];
-		*(volatile u32*)(pma + 0x84) = *(u32 *)&desc_cfg[4];
-		*(volatile u32*)(pma + 0x88) = *(u32 *)&desc_cfg[8];
-		if (wLength == 9)
-		{
-			/* Update EP0 */
-			*(volatile u32*)(pma + 0) = (9 << 16) | 0x80;
-		}
-		else if (wLength == 32)
-		{
-			/* Insert Interface Descriptor too */
-			*(volatile u32*)(pma + 0x8C) = *(u32 *)&desc_cfg[12];
-			*(volatile u32*)(pma + 0x90) = *(u32 *)&desc_cfg[16];
-			*(volatile u32*)(pma + 0x94) = *(u32 *)&desc_cfg[20];
-			*(volatile u32*)(pma + 0x98) = *(u32 *)&desc_cfg[24];
-			*(volatile u32*)(pma + 0x9C) = *(u32 *)&desc_cfg[28];
-			*(volatile u32*)(pma + 0xA0) = *(u32 *)&desc_cfg[32];
-			/* Update EP0 */
-			*(volatile u32*)(pma + 0) = (32 << 16) | 0x80;
-		}
-		else
-			return;
-	}
-	/* Send Device Qualifier */
-	else if (num == 6)
-	{
-		/* Copy payload */
-		*(volatile u32*)(pma + 0x80) = *(u32 *)&desc_dev_qualifier[0];
-		*(volatile u32*)(pma + 0x84) = *(u32 *)&desc_dev_qualifier[4];
-		*(volatile u32*)(pma + 0x88) = *(u32 *)&desc_dev_qualifier[8];
-		/* Update EP0 */
-		*(volatile u32*)(pma + 0) = (10 << 16) | 0x80;
-	}
+#ifdef USB_INFO
+	uart_puts("USB: Set address ");
+	uart_putdec(dev_addr);
+	uart_puts("\r\n");
+#endif
+	state = 1;
+	/* Send ZLP to ack setup and ask data phase */
+	ep0_send(0, 0);
+}
+
+/**
+ * @brief Decode and process a SET_CONFIGURATION transaction
+ *
+ * @param hdr First four bytes (header) of request
+ */
+static inline void ep0_set_configuration(u32 hdr)
+{
+	u16 wValue;
+
+	wValue = (u16)(hdr >> 16);
+
+	uart_puts("USB: Set Configuration ");
+	uart_putdec(wValue);
+	uart_puts("\r\n");
+
+	state = 4;
+	/* Send ZLP to ack setup and ask data phase */
+	ep0_send(0, 0);
+}
+
+/**
+ * @brief Send a packet to the control endpoint (EP0)
+ *
+ * @param data Pointer to a buffer with data to send (may be null)
+ * @param len  Number of byte to send during IN transfer
+ */
+static void ep0_send(const u8 *data, unsigned int len)
+{
+	u8 *pma = (u8 *)USB_RAM;
+	u32 offset;
+	u32 ep0r;
+
+	/* Read current EP0 TX buffer address */
+	offset = (*(volatile u32*)(pma + 0) & 0xFFFF);
+
+	/* If a pointer to data has been given, copy to PMA */
+	if (data)
+		memcpy_to_pma(pma + offset, data, len);
+	/* else, data should be already available into PMA */
 	else
-		return;
+	{ /* Nothing to do */ }
+
+	/* Update EP0 TX buffer descriptor with data len */
+	*(volatile u32*)(pma + 0) = (len << 16) | offset;
 	/* Update EP0 for IN transfer */
 	ep0r = reg_rd(USB_CHEPxR(0));
 	ep0r &= ~(u32)(0x7040);
-	ep0r |=  (u32)(1 << 15);
-	ep0r ^= (1 << 4);
-	ep0r ^= (1 << 5);
+	ep0r |=  (u32)(1 << 15); // Keep VTRX (1 has no effect)
+	if (len == 0)
+		ep0r &= ~(u32)(1 << 7); // Clear VTTX
+	ep0r ^= (1 << 4); // STATTX0
+	ep0r ^= (1 << 5); // STATTX1 : Valid
 	reg_wr(USB_CHEPxR(0), ep0r);
-#ifdef USB_DEBUG
-	if (dbg_flags & DBG_EP0_REG)
-	{
-		readback = reg_rd(USB_CHEPxR(0));
-		uart_puts(" - DESC TX "); uart_puthex(ep0r, 32);
-		uart_puts(" > "); uart_puthex(readback, 32);
-		uart_puts("\r\n");
-	}
-#endif
 }
 
-void ep0_rx(void)
+static inline void ep0_rx(void)
 {
 	char buf_in[32];
 	u8 *pma = (u8 *)USB_RAM;
 	uint len;
-	u16 wValue;
 	u32 val;
 	u32 ep0r;
 
@@ -339,81 +373,14 @@ void ep0_rx(void)
 		uart_puts("EP0: GET_STATUS\r\n");
 	/* GET_DESCRIPTOR */
 	else if ((val & 0xFFFF) == 0x0680)
-	{
-		wValue = (u16)(val >> 16);
-		/* Device Descriptor */
-		if (wValue == 0x0100)
-		{
-#ifdef USB_INFO
-			uart_puts("USB: Get Device Descriptor\r\n");
-#endif
-			state = 2;
-			ep0_desc(1);
-		}
-		/* Configuration descriptor */
-		else if (wValue == 0x0200)
-		{
-#ifdef USB_INFO
-			uart_puts("USB: Get Configuration Descriptor\r\n");
-#endif
-			state = 3;
-			ep0_desc(2);
-		}
-		/* String Descriptor */
-		else if ((wValue & 0xFF00) == 0x0300)
-			ep0_get_string();
-		/* Device Qualifier  */
-		else if (wValue == 0x0600)
-		{
-			uart_puts("USB: Get Device Qualifier\r\n");
-			state = 5;
-			ep0_desc(6);
-		}
-		else
-		{
-			uart_puts("USB: GET_DESCRIPTOR ");
-			uart_puthex(wValue, 16);
-			uart_puts("(Unknown)\r\n");
-		}
-	}
+		ep0_get_descriptor();
 	/* SET_ADDRESS */
 	else if ((val & 0xFFFF) == 0x0500)
-	{
-		dev_addr = ((val >> 16) & 0x7F);
-		state = 1;
-#ifdef USB_INFO
-		uart_puts("USB: Set address ");
-		uart_putdec(dev_addr);
-		uart_puts("\r\n");
-#endif
-		/* Update EP0 */
-		*(volatile u32*)(USB_RAM + 0) = (0 << 16) | 0x80;
-		ep0r = reg_rd(USB_CHEPxR(0));
-		ep0r &= ~(u32)(0x7040);
-		ep0r |=  (u32)(1 << 15); // Keep VTRX (if set)
-		ep0r &= ~(u32)(1 << 7);  // Clear VTTX (if set
-		ep0r ^= (1 << 4); // STATTX0
-		ep0r ^= (1 << 5); // STATTX1 : Valid
-		reg_wr(USB_CHEPxR(0), ep0r);
-	}
+		ep0_set_address(val);
 	/* SET_CONFIGURATION */
 	else if ((val & 0xFFFF) == 0x0900)
-	{
-		wValue = (u16)(val >> 16);
-		uart_puts("USB: Set Configuration ");
-		uart_putdec(wValue);
-		uart_puts("\r\n");
-		/* Send ZLP (Status) */
-		state = 4;
-		*(volatile u32*)(USB_RAM + 0) = (0 << 16) | 0x80;
-		ep0r = reg_rd(USB_CHEPxR(0));
-		ep0r &= ~(u32)(0x7040);
-		ep0r |=  (u32)(1 << 15); // Keep VTRX (if set)
-		ep0r &= ~(u32)(1 << 7);  // Clear VTTX (if set
-		ep0r ^= (1 << 4); // STATTX0
-		ep0r ^= (1 << 5); // STATTX1 : Valid
-		reg_wr(USB_CHEPxR(0), ep0r);
-	}
+		ep0_set_configuration(val);
+	/* Unknown or not supported request */
 	else
 	{
 		// Extract data
@@ -430,15 +397,6 @@ void ep0_rx(void)
 	}
 
 rx_end:
-#ifdef USB_DEBUG
-	/* Fill memory with pattern for later inspection */
-	*(volatile u32*)(pma + 0x40) = 0xAA55AA55;
-	*(volatile u32*)(pma + 0x44) = 0xA55AA55A;
-	*(volatile u32*)(pma + 0x48) = 0xAA55AA55;
-	*(volatile u32*)(pma + 0x4C) = 0xA55AA55A;
-	*(volatile u32*)(pma + 0x50) = 0xAA55AA55;
-	*(volatile u32*)(pma + 0x54) = 0xA55AA55A;
-#endif
 	*(u32*)(pma + 4) = (u32)((1 << 31) | (1 << 26) | (0 << 16) | 0x40);
 	ep0r = reg_rd(USB_CHEPxR(0));
 	ep0r &= ~(u32)(0x4070);  // Keep bits
@@ -455,28 +413,6 @@ rx_end:
 		uart_puts("\r\n");
 	}
 #endif
-}
-
-void memcpy_to_pma(u8 *dst, const u8 *src, unsigned int len)
-{
-	int i;
-	u32 v;
-
-	for (i = 0; len >= 4; i+=4, len -= 4)
-		*(volatile u32*)(dst + i) = *(u32 *)(src + i);
-
-	if (len > 0)
-	{
-		v = 0;
-		if (len > 3)
-			v |= (*(src + i + 3) << 24);
-		if (len > 2)
-			v |= (*(src + i + 2) << 16);
-		if (len > 1)
-			v |= (*(src + i + 1) <<  8);
-		v |= *(src + i);
-		*(volatile u32*)(dst + i) = v;
-	}
 }
 
 void USB_Handler(void)
@@ -508,7 +444,7 @@ void USB_Handler(void)
 		state = 0;
 		/* Reset device address */
 		reg_wr(USB_DADDR, (1 << 7));
-		ep0_config(0);
+		ep0_config();
 		isr_ack = (1 << 10);
 		isr_ack |= ((1 << 11) | (1 << 8));
 	}
@@ -588,7 +524,14 @@ void USB_Handler(void)
 					ep0r |=  (u32)(1 << 15);
 					ep0r &= ~(u32)(1 << 7);
 					reg_wr(USB_CHEPxR(0), ep0r);
-					uart_puts(" - "); uart_puthex(ep0r, 32); uart_puts(" > "); uart_puthex(reg_rd(USB_CHEPxR(0)), 32); uart_puts("\r\n");
+//#ifdef USB_DEBUG
+//					if (dbg_flags & DBG_EP0_REG)
+					{
+						uart_puts(" - "); uart_puthex(ep0r, 32);
+						uart_puts(" > "); uart_puthex(reg_rd(USB_CHEPxR(0)), 32);
+						uart_puts("\r\n");
+					}
+//#endif
 				}
 			}
 		}
