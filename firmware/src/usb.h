@@ -17,6 +17,11 @@
 #define USB_H
 #include "hardware.h"
 
+#define USB_ST_POWERED    0
+#define USB_ST_DEFAULT    1
+#define USB_ST_ADDRESS    2
+#define USB_ST_CONFIGURED 3
+
 #define USB_RAM (USB_R1)
 /* USB peripheral registers */
 #define USB_CHEPxR(x) (u32)(USB + (x*4))

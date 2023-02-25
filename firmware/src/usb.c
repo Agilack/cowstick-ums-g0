@@ -26,14 +26,12 @@ static u32  dbg_flags;
 static uint it_count;
 #endif
 
-uint state = 0;
+uint state;
 uint dev_addr = 0;
 
 static void ep0_config(void);
-static inline void ep0_get_descriptor(void);
-static inline void ep0_set_address(u32 hdr);
-static inline void ep0_set_configuration(u32 hdr);
 static void ep0_send(const u8 *data, unsigned int len);
+static void ep0_stall(void);
 void memcpy_to_pma(u8 *dst, const u8 *src, unsigned int len);
 
 /**
@@ -51,7 +49,7 @@ void usb_init(void)
 	it_count = 0;
 #endif
 	dev_addr = 0;
-	state = 0;
+	state = USB_ST_POWERED;
 
 	/* Activate USB */
 	reg_set(RCC_APBENR1, (1 << 13));
@@ -81,7 +79,7 @@ void usb_start(void)
 {
 	u32 v;
 
-	state = 0;
+	state = USB_ST_POWERED;
 
 	/* Set device address to 0 */
 	reg_wr(USB_DADDR, (1 << 7));
@@ -149,6 +147,17 @@ void memcpy_to_pma(u8 *dst, const u8 *src, unsigned int len)
 /* --                                                                      -- */
 /* -------------------------------------------------------------------------- */
 
+static inline void ep0_feature_clear(u32 hdr);
+static inline void ep0_feature_set(u32 hdr);
+static inline void ep0_get_descriptor(void);
+static inline void ep0_get_configuration(void);
+static inline void ep0_get_interface(void);
+static inline void ep0_get_status(void);
+static inline void ep0_set_address(u32 hdr);
+static inline void ep0_set_configuration(u32 hdr);
+static inline void ep0_set_descriptor(void);
+static inline void ep0_set_interface(u32 hdr);
+
 /**
  * @brief Configure the control endpoint (EP0)
  *
@@ -185,6 +194,49 @@ static void ep0_config(void)
 }
 
 /**
+ * @brief Decode and process a CLEAR_FEATURE request
+ *
+ * @param hdr First four bytes (header) of request
+ */
+static inline void ep0_feature_clear(u32 hdr)
+{
+#ifdef USB_INFO
+	u16 wValue;
+	wValue = (u16)(hdr >> 16);
+
+	uart_puts("USB: Clear feature ");
+	uart_puthex(wValue, 16);
+	uart_puts("\r\n");
+#else
+	(void)hdr;
+#endif
+	/* Send ZLP to ack setup and ask data phase */
+	ep0_send(0, 0);
+}
+
+/**
+ * @brief Decode and process a SET_FEATURE request
+ *
+ * @param hdr First four bytes (header) of request
+ */
+static inline void ep0_feature_set(u32 hdr)
+{
+#ifdef USB_INFO
+	u16 wValue;
+	wValue = (u16)(hdr >> 16);
+
+	uart_puts("USB: Set feature ");
+	uart_puthex(wValue, 16);
+	uart_puts("\r\n");
+#else
+	(void)hdr;
+#endif
+
+	/* Send ZLP to ack setup and ask data phase */
+	ep0_send(0, 0);
+}
+
+/**
  * @brief Decode and process a GET_DESCRIPTOR request
  *
  * This function is called by the Endpoint-0 reception handler (ep0_rx) when a
@@ -214,7 +266,6 @@ static inline void ep0_get_descriptor(void)
 #ifdef USB_INFO
 		uart_puts("USB: Get Device Descriptor\r\n");
 #endif
-//		state = 2;
 		ep0_send(desc_device, desc_device[0]);
 	}
 	/* Get: Configuration descriptor */
@@ -225,7 +276,6 @@ static inline void ep0_get_descriptor(void)
 		uart_putdec(wLength);
 		uart_puts(")\r\n");
 #endif
-		state = 3;
 		/* Get length of the descriptor */
 		len = sizeof(desc_cfg);
 		/* If this length is longer than data requested by host */
@@ -241,7 +291,6 @@ static inline void ep0_get_descriptor(void)
 		uart_puts("USB: Get Device Qualifier\r\n");
 #endif
 		ep0_send(desc_dev_qualifier, desc_dev_qualifier[0]);
-		state = 5;
 	}
 	/* Get: String Descriptor */
 	else if (pkt_rx[3] == 0x03)
@@ -261,14 +310,80 @@ static inline void ep0_get_descriptor(void)
 		else if (pkt_rx[2] == 0x02)
 			ep0_send(usbdev_str_product, usbdev_str_product[0]);
 		else
+		{
 			uart_puts("USB: Unknown String Descriptor index\r\n");
+			ep0_stall();
+		}
 	}
 	else
 	{
 		uart_puts("USB: GET_DESCRIPTOR (unknown) ");
-		uart_dump(pkt_rx, 4);
+		uart_puthex(pkt_rx[0], 8);
+		uart_puthex(pkt_rx[1], 8);
+		uart_puthex(pkt_rx[2], 8);
+		uart_puthex(pkt_rx[3], 8);
 		uart_puts("\r\n");
+		ep0_stall();
 	}
+}
+
+/**
+ * @brief Decode and process a GET_CONFIGURATION request
+ *
+ * This function is called by the Endpoint-0 reception handler (ep0_rx) when
+ * a GET_CONFIGURATION request has been received. The configuration currently
+ * selected (by a previous SET_CONFIGURATION) is returned.
+ */
+static inline void ep0_get_configuration(void)
+{
+	unsigned short selected;
+#ifdef USB_INFO
+	uart_puts("EP0: GET_CONFIGURATION\r\n");
+#endif
+	/* TODO: For the moment, we need only one config, so the response
+	         is hard-coded to save memory */
+	selected = 1;
+
+	ep0_send((u8 *)&selected, 1);
+}
+
+/**
+ * @brief Decode and process a GET_INTERFACE request
+ *
+ * This function is called by the Endpoint-0 reception handler (ep0_rx) when
+ * a GET_INTERFACE request has been received. Some interface may support
+ * multiple alternate settings. This function returns the currently selected
+ * setting for one specified interface (9.4.4)
+ */
+static inline void ep0_get_interface(void)
+{
+	unsigned short selected;
+#ifdef USB_INFO
+	uart_puts("EP0: GET_INTERFACE\r\n");
+#endif
+	selected = 0;
+
+	ep0_send((u8 *)&selected, 1);
+}
+
+/**
+ * @brief Decode and process a GET_STATUS request
+ *
+ * This function is called by the Endpoint-0 reception handler (ep0_rx) when
+ * host ask device status. Device status content is defined by USB spec with
+ * only two option bits (power and wakeup).
+ */
+static inline void ep0_get_status(void)
+{
+	unsigned short status;
+#ifdef USB_INFO
+	uart_puts("EP0: GET_STATUS\r\n");
+#endif
+	/* Bit 1 : Remote wakeup */
+	/* Bit 0 : Self powered  */
+	status = 0;
+
+	ep0_send((u8 *)&status, 2);
 }
 
 /**
@@ -285,7 +400,7 @@ static inline void ep0_set_address(u32 hdr)
 	uart_putdec(dev_addr);
 	uart_puts("\r\n");
 #endif
-	state = 1;
+	state = USB_ST_ADDRESS;
 	/* Send ZLP to ack setup and ask data phase */
 	ep0_send(0, 0);
 }
@@ -305,7 +420,44 @@ static inline void ep0_set_configuration(u32 hdr)
 	uart_putdec(wValue);
 	uart_puts("\r\n");
 
-	state = 4;
+	/* Send ZLP to ack setup and ask data phase */
+	ep0_send(0, 0);
+}
+
+/**
+ * @brief Decode and process a SET_DESCRIPTOR request
+ *
+ * The SET_DESCRIPTOR request can be used by some device to dynamically update
+ * device descriptors or adding new descriptors. This function is not really
+ * used here and only respond with "Request Error" (9.4.8).
+ */
+static inline void ep0_set_descriptor(void)
+{
+#ifdef USB_INFO
+	uart_puts("USB: Set Descriptor (not supported)\r\n");
+#endif
+	/* As this function is not supported, respond with Request Error */
+	ep0_stall();
+}
+
+/**
+ * @brief Decode and process a SET_INTERFACE request
+ *
+ * @param hdr First four bytes (header) of request
+ */
+static inline void ep0_set_interface(u32 hdr)
+{
+#ifdef USB_INFO
+	u16 wValue;
+
+	wValue = (u16)(hdr >> 16);
+
+	uart_puts("USB: Set Interface ");
+	uart_putdec(wValue);
+	uart_puts("\r\n");
+#else
+	(void)hdr;
+#endif
 	/* Send ZLP to ack setup and ask data phase */
 	ep0_send(0, 0);
 }
@@ -345,9 +497,37 @@ static void ep0_send(const u8 *data, unsigned int len)
 	reg_wr(USB_CHEPxR(0), ep0r);
 }
 
+/**
+ * @brief Reject current request by responding with STALL
+ *
+ * Control pipes have the unique ability to return a STALL handshake due to
+ * function problems in control transfers (USB 2.0 8.5.3.4) In more general
+ * case STALL in used to report an error on endpoint-0 (see 9.2.7).
+ */
+static void ep0_stall(void)
+{
+	u8 *pma = (u8 *)USB_RAM;
+	u32 offset;
+	u32 ep0r;
+
+	/* Read current EP0 TX buffer address */
+	offset = (*(volatile u32*)(pma + 0) & 0xFFFF);
+	/* Update EP0 TX buffer descriptor with nul data len (0) */
+	*(volatile u32*)(pma + 0) = (0 << 16) | offset;
+	/* Update EP0 for IN transfer */
+	ep0r = reg_rd(USB_CHEPxR(0));
+	ep0r &= ~(u32)(0x7040);
+	ep0r |=  (u32)(1 << 15); // Keep VTRX (1 has no effect)
+	ep0r &= ~(u32)(1 <<  7); // Clear VTTX (no data to transfer)
+	ep0r ^=  (u32)(1 <<  4); // STATTX : Stall
+	reg_wr(USB_CHEPxR(0), ep0r);
+}
+
 static inline void ep0_rx(void)
 {
+#ifdef USB_DEBUG
 	char buf_in[32];
+#endif
 	u8 *pma = (u8 *)USB_RAM;
 	uint len;
 	u32 val;
@@ -370,19 +550,38 @@ static inline void ep0_rx(void)
 
 	/* GET_STATUS */
 	if ((val & 0xFFFF) == 0x0080)
-		uart_puts("EP0: GET_STATUS\r\n");
+		ep0_get_status();
 	/* GET_DESCRIPTOR */
 	else if ((val & 0xFFFF) == 0x0680)
 		ep0_get_descriptor();
+	/* GET_CONFIGURATION */
+	else if ((val & 0xFFFF) == 0x0880)
+		ep0_get_configuration();
+	/* GET_INTERFACE */
+	else if ((val & 0xFFFF) == 0x0a80)
+		ep0_get_interface();
+	/* CLEAR_FEATURE */
+	else if ((val & 0xFFFF) == 0x0100)
+		ep0_feature_clear(val);
+	/* SET_FEATURE */
+	else if ((val & 0xFFFF) == 0x0300)
+		ep0_feature_set(val);
 	/* SET_ADDRESS */
 	else if ((val & 0xFFFF) == 0x0500)
 		ep0_set_address(val);
+	/* SET_DESCRIPTOR */
+	else if ((val & 0xFFFF) == 0x0700)
+		ep0_set_descriptor();
 	/* SET_CONFIGURATION */
 	else if ((val & 0xFFFF) == 0x0900)
 		ep0_set_configuration(val);
+	/* SET_INTERFACE */
+	else if ((val & 0xFFFF) == 0x0B00)
+		ep0_set_interface(val);
 	/* Unknown or not supported request */
 	else
 	{
+#ifdef USB_DEBUG
 		// Extract data
 		*(u32 *)&buf_in[0]  = *(volatile u32*)(pma + 0x40);
 		*(u32 *)&buf_in[4]  = *(volatile u32*)(pma + 0x44);
@@ -394,6 +593,8 @@ static inline void ep0_rx(void)
 		*(u32 *)&buf_in[28] = *(volatile u32*)(pma + 0x5C);
 		// Dump received packet
 		uart_dump((u8*)buf_in, 32);
+#endif
+		ep0_stall();
 	}
 
 rx_end:
@@ -402,8 +603,7 @@ rx_end:
 	ep0r &= ~(u32)(0x4070);  // Keep bits
 	ep0r |=  (u32)(1 << 7);  // Keep VTTX (if set)
 	ep0r &= ~(u32)(1 << 15); // Clear VTRX
-	ep0r ^= (1 << 12); // STATRX0 = 1
-	ep0r ^= (1 << 13); // STATRX1 = 1 (Valid)
+	ep0r ^=  (u32)(3 << 12); // STATRX0 : Valid
 	reg_wr(USB_CHEPxR(0), ep0r);
 #ifdef USB_DEBUG
 	if (dbg_flags & DBG_EP0_REG)
@@ -441,7 +641,7 @@ void USB_Handler(void)
 	/* RST_DCON event */
 	if (v & (1 << 10))
 	{
-		state = 0;
+		state = USB_ST_DEFAULT;
 		/* Reset device address */
 		reg_wr(USB_DADDR, (1 << 7));
 		ep0_config();
@@ -464,9 +664,9 @@ void USB_Handler(void)
 				if (dbg_flags & DBG_EP0_REG)
 					uart_puts("EP0: EndTX\r\n");
 #endif
-				if (state == 1)
+				if (state == USB_ST_ADDRESS)
 				{
-					state = 0;
+					state = USB_ST_CONFIGURED;
 					reg_wr(USB_DADDR, (1 << 7) | dev_addr);
 #ifdef USB_INFO
 					uart_puts(" - Save new address ");
@@ -478,44 +678,8 @@ void USB_Handler(void)
 					ep0r &= ~(u32)(0x0070);  // Keep bits
 					ep0r &= ~(u32)(1 << 7);  // Clear VTTX
 					ep0r &= ~(u32)(1 << 15); // Clear VTRX
-					ep0r ^= (1 << 12); // STATRX0 = 1
-					ep0r ^= (1 << 13); // STATRX1 = 1 (Valid)
+					ep0r ^=  (u32)(3 << 12); // STATRX : Valid
 					reg_wr(USB_CHEPxR(0), ep0r);
-				}
-				else if ((state >= 2) && (state <= 5))
-				{
-					state = 0;
-					/* Update EP0 */
-					*(volatile u32*)(USB_RAM + 0) = (0 << 16) | 0x80;
-					ep0r = reg_rd(USB_CHEPxR(0));
-					ep0r &= ~(u32)(0x7070);
-					ep0r |=  (u32)(1 << 15);
-					ep0r &= ~(u32)(1 << 7);
-					reg_wr(USB_CHEPxR(0), ep0r);
-#ifdef USB_DEBUG
-					if (dbg_flags & DBG_EP0_REG)
-					{
-						readback = reg_rd(USB_CHEPxR(0));
-						uart_puts(" - "); uart_puthex(ep0r, 32);
-						uart_puts(" > "); uart_puthex(readback, 32);
-						uart_puts("\r\n");
-					}
-#endif
-					ep0r = reg_rd(USB_CHEPxR(0));
-					ep0r &= ~(u32)(0x0070);
-					ep0r |=  (u32)(1 << 7);
-					ep0r ^= (1 << 12); // STATRX0
-					ep0r ^= (1 << 13); // STATRX1 : Valid
-					reg_wr(USB_CHEPxR(0), ep0r);
-#ifdef USB_DEBUG
-					if (dbg_flags & DBG_EP0_REG)
-					{
-						readback = reg_rd(USB_CHEPxR(0));
-						uart_puts(" - "); uart_puthex(ep0r, 32);
-						uart_puts(" > "); uart_puthex(readback, 32);
-						uart_puts("\r\n");
-					}
-#endif
 				}
 				else
 				{
@@ -524,14 +688,14 @@ void USB_Handler(void)
 					ep0r |=  (u32)(1 << 15);
 					ep0r &= ~(u32)(1 << 7);
 					reg_wr(USB_CHEPxR(0), ep0r);
-//#ifdef USB_DEBUG
-//					if (dbg_flags & DBG_EP0_REG)
+#ifdef USB_DEBUG
+					if (dbg_flags & DBG_EP0_REG)
 					{
 						uart_puts(" - "); uart_puthex(ep0r, 32);
 						uart_puts(" > "); uart_puthex(reg_rd(USB_CHEPxR(0)), 32);
 						uart_puts("\r\n");
 					}
-//#endif
+#endif
 				}
 			}
 		}
