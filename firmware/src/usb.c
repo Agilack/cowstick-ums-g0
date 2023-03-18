@@ -17,6 +17,7 @@
 #include "uart.h"
 #include "usb_desc.h"
 #include "usb.h"
+#include "usb_bulk.h"
 
 #ifdef USB_DEBUG
 #define DBG_IT_MAX   100
@@ -28,6 +29,8 @@ static uint it_count;
 
 uint state;
 uint dev_addr = 0;
+
+static usb_ep_def ep_defs[7];
 
 static void ep0_config(void);
 static void ep0_send(const u8 *data, unsigned int len);
@@ -51,6 +54,12 @@ void usb_init(void)
 	dev_addr = 0;
 	state = USB_ST_POWERED;
 
+	for (i = 0; i < 7; i++)
+	{
+		ep_defs[i].rx = 0;
+		ep_defs[i].tx_complete = 0;
+	}
+
 	/* Activate USB */
 	reg_set(RCC_APBENR1, (1 << 13));
 
@@ -68,6 +77,9 @@ void usb_init(void)
 
 	for (i = 0; i < 0x4000; i++)
 		asm volatile("nop");
+
+	/* Initialize USB upper layers (class and interfaces) */
+	usb_bulk_init();
 
 	/* Enable USB interrupt into NVIC */
 	reg_wr(0xE000E100, (1 << 8)); /* USB */
@@ -110,6 +122,113 @@ void usb_start(void)
 void usb_periodic(void)
 {
 	/* Nothing to do yet */
+}
+
+/**
+ * @brief Send a packet to a specified endpoint
+ *
+ * @param ep   Endpoint number (1 -> 7)
+ * @param data Pointer to a buffer with data to send (may be null)
+ * @param len  Number of byte to send during IN transfer
+ */
+void usb_send(const u8 ep, const u8 *data, unsigned int len)
+{
+	u8 *pma = (u8 *)USB_RAM;
+	u32 offset;
+	u32 ep_r;
+
+	/* Sanity check */
+	if ((ep == 0) || (ep > 7))
+		return;
+
+	/* Read current EP TX buffer address */
+	offset = (*(volatile u32*)(pma + (ep << 3)) & 0xFFFF);
+
+	/* If a pointer to data has been given, copy to PMA */
+	if (data)
+		memcpy_to_pma(pma + offset, data, len);
+	/* else, data should be already available into PMA */
+	else
+	{ /* Nothing to do */ }
+
+	/* Update EP TX buffer descriptor with data len */
+	*(volatile u32*)(pma + (ep << 3)) = (len << 16) | offset;
+	/* Update EP for IN transfer */
+	ep_r = reg_rd(USB_CHEPxR(ep));
+	ep_r &= ~(u32)(0x7040);
+	ep_r |=  (u32)(1 << 15); // Keep VTRX (1 has no effect)
+	if (len == 0)
+		ep_r &= ~(u32)(1 << 7); // Clear VTTX
+	ep_r ^= (1 << 4); // STATTX0
+	ep_r ^= (1 << 5); // STATTX1 : Valid
+	reg_wr(USB_CHEPxR(ep), ep_r);
+}
+
+
+/**
+ * @brief Configure an endpoint for communication
+ *
+ * This function can be called by class or interface layer to configure and
+ * activate an endpoint. The direction (in, out or both) is defined by the
+ * presence of callbacks function pointers into the "def" argument. Offset of
+ * endpoint buffers into pma memory is configured into the usb_desc.h file.
+ *
+ * @param ep   Endpoint number (1 -> 7)
+ * @param type Endpoint type (Bulk, Iso, Interrupt)
+ * @param def  Pointer to an endpoint definition (for callbacks)
+ */
+void usb_ep_configure(u8 ep, u8 type, usb_ep_def *def)
+{
+	usb_ep_def *ep_def;
+	u8 *pma = (u8 *)USB_RAM;
+	u32 cur, v;
+
+	/* Sanity check */
+	if ((ep == 0) || (ep > 7) || (def == 0))
+		return;
+
+	ep_def = &ep_defs[ep - 1];
+
+	pma += (ep << 3);
+	/* Configure TX descriptor for selected endpoint */
+	if (def->tx_complete)
+		*(u32*)(pma + 0) = (u32)((0 << 16) | ep_offsets[ep][0]);
+	else
+		*(u32*)(pma + 0) = (u32)0x00000000;
+	ep_def->tx_complete = def->tx_complete;
+	/* Configure RX descriptor for selected endpoint */
+	if (def->rx)
+		*(u32*)(pma + 4) = (u32)((1 << 31) | (1 << 26) | (0 << 16) | ep_offsets[ep][1]);
+	else
+		*(u32*)(pma + 4) = (u32)0x00000000;
+	ep_def->rx = def->rx;
+
+	cur = reg_rd(USB_CHEPxR(ep));
+	v  = (type << 9); // UTYPE (bulk, iso, int, ...)
+	v  = (ep   << 0); // Endpoint Address
+	// Configure endpoint RX flags
+	if (def->rx)
+		v |=  (u32)(3 << 12); // STATRX: Valid (wait for rx)
+	else
+		v &= ~(u32)(3 << 12); // STATTX: Disabled
+	if (cur & (1 << 14))
+		v |= (1 << 14);  // Clear DTOGRX
+	// Configure endpoint TX flags
+	if (def->tx_complete)
+		v |=  (u32)(2 << 4); // STATTX: NAK
+	else
+		v &= ~(u32)(3 << 4); // STATTX: Disabled
+	reg_wr(USB_CHEPxR(ep), v);
+
+#ifdef USB_INFO
+	uart_puts("USB: Configure EP ");
+	uart_puthex(reg_rd(USB_CHEPxR(ep)), 32);
+	uart_puts("  TX desc ");
+	uart_puthex(*(u32*)(pma + 0), 32);
+	uart_puts("  RX desc ");
+	uart_puthex(*(u32*)(pma + 4), 32);
+	uart_puts("\r\n");
+#endif
 }
 
 /**
@@ -157,6 +276,86 @@ static inline void ep0_set_address(u32 hdr);
 static inline void ep0_set_configuration(u32 hdr);
 static inline void ep0_set_descriptor(void);
 static inline void ep0_set_interface(u32 hdr);
+
+/**
+ * @brief Process a packet received on endpoint
+ *
+ * @param ep Endpoint number
+ */
+static inline void ep_rx(unsigned char ep)
+{
+	u32 pma_addr;
+	u8 *data;
+	u32 ep_r;
+	u32 len;
+
+	/* Compute address of EP descriptor entry into table */
+	pma_addr = ((u32)USB_RAM + (ep << 3) + 4);
+	/* Read endpoint RX descriptor */
+	ep_r = *(u32 *)pma_addr;
+	/* Extract received packet parameters */
+	len  = ((ep_r >> 16) & 0x3FF);
+	data = (u8 *)((u32)USB_RAM + (ep_r & 0xFFFF));
+
+#ifdef USB_INFO
+	uart_puts("EP desc ep_desc=");
+	uart_puthex(ep_r, 32);
+	uart_puts(" len=");
+	uart_putdec(len);
+	uart_puts(" data=");
+	uart_puthex((u32)data, 32);
+	uart_puts(" callback ");
+	uart_puthex((u32)ep_defs[ep - 1].rx, 32);
+	uart_puts("\r\n");
+#endif
+
+	if (ep_defs[ep - 1].rx != 0)
+		ep_defs[ep - 1].rx(data, len);
+
+	*(u32*)pma_addr = ep_r & ~(u32)(0x3FF << 16);
+
+	ep_r = reg_rd(USB_CHEPxR(ep));
+	ep_r &= ~(u32)(0x4070);  // Keep bits
+	ep_r |=  (u32)(1 << 7);  // Keep VTTX (if set)
+	ep_r &= ~(u32)(1 << 15); // Clear VTRX
+	ep_r ^=  (u32)(3 << 12); // STATRX0 : Valid
+	reg_wr(USB_CHEPxR(ep), ep_r);
+}
+
+/**
+ * @brief Process an end-of-transmission event on an endpoint
+ *
+ * @param ep Endpoint number
+ */
+static inline void ep_tx(unsigned char ep)
+{
+	u32 pma_addr;
+	u32 ep_r;
+
+	/* Compute address of EP descriptor entry into table */
+	pma_addr = ((u32)USB_RAM + (ep << 3) + 0);
+	/* Read endpoint TX descriptor */
+	ep_r = *(u32 *)pma_addr;
+
+	if (ep_defs[ep - 1].tx_complete != 0)
+		ep_defs[ep - 1].tx_complete();
+#ifdef USB_INFO
+	else
+	{
+		uart_puts("USB: Endpoint ");
+		uart_putdec(ep);
+		uart_puts(" transmit complete\r\n");
+	}
+#endif
+	/* Clear endpoint data length */
+	*(u32*)pma_addr = ep_r & ~(u32)(0x3FF << 16);
+
+	ep_r = reg_rd(USB_CHEPxR(ep));
+	ep_r &= ~(u32)(0x7070);
+	ep_r |=  (u32)(1 << 15);
+	ep_r &= ~(u32)(1 << 7);
+	reg_wr(USB_CHEPxR(ep), ep_r);
+}
 
 /**
  * @brief Configure the control endpoint (EP0)
@@ -420,6 +619,9 @@ static inline void ep0_set_configuration(u32 hdr)
 	uart_putdec(wValue);
 	uart_puts("\r\n");
 
+	/* At this point, it is possible to enable class driver(s) */
+	usb_bulk_enable();
+
 	/* Send ZLP to ack setup and ask data phase */
 	ep0_send(0, 0);
 }
@@ -623,8 +825,6 @@ void USB_Handler(void)
 	u32  ep0r;
 
 #ifdef USB_DEBUG
-	u32 readback;
-
 	if (dbg_flags & DBG_IRQ)
 	{
 		uart_puts("USB: IT ");
@@ -645,6 +845,9 @@ void USB_Handler(void)
 		/* Reset device address */
 		reg_wr(USB_DADDR, (1 << 7));
 		ep0_config();
+		/* Reset USB class layers */
+		usb_bulk_reset();
+
 		isr_ack = (1 << 10);
 		isr_ack |= ((1 << 11) | (1 << 8));
 	}
@@ -654,7 +857,14 @@ void USB_Handler(void)
 		ep  = (v & 0x0F);
 		dir = (v & (1 << 4)) ? 1 : 0;
 
-		if (ep == 0)
+		if (ep)
+		{
+			if (dir == 1)
+				ep_rx((u8)ep);
+			else
+				ep_tx((u8)ep);
+		}
+		else
 		{
 			if (dir == 1)
 				ep0_rx();

@@ -16,6 +16,17 @@
 #ifndef USB_DESC_H
 #define USB_DESC_H
 
+const u16 ep_offsets[8][2] = {
+	{0x000, 0x000}, /* EP0 : Control  */
+	{0x180, 0x140}, /* EP1 : Bulk IN  */
+	{0x100, 0x0C0}, /* EP2 : Bulk OUT */
+	{0    , 0    }, /* EP3 (unused) */
+	{0    , 0    }, /* EP4 (unused) */
+	{0    , 0    }, /* EP5 (unused) */
+	{0    , 0    }, /* EP6 (unused) */
+	{0    , 0    }  /* EP7 (unused) */
+};
+
 /**
  * @brief Device descriptor
  */
