@@ -21,6 +21,7 @@
 
 typedef libusb_device_handle usbdev;
 
+int iface_ctrl(usbdev *dev, uint8_t type, uint8_t req, uint16_t v, int len);
 int bulk_rd(usbdev *dev);
 int bulk_wr(usbdev *dev, int len);
 
@@ -49,6 +50,11 @@ int main (int argc, char **argv)
 	bulk_rd(dev);
 	bulk_wr(dev, 512);
 	bulk_rd(dev);
+
+	iface_ctrl(dev, 0xA0, 1, 2, 0); // Device to host, len=0
+	iface_ctrl(dev, 0xA0, 1, 2, 2); // Device to host, len>0
+	iface_ctrl(dev, 0x20, 1, 2, 0); // Host to device, len=0
+	iface_ctrl(dev, 0x20, 1, 2, 2); // Host to device, len>0
 
 complete:
 	if (dev)
@@ -121,3 +127,45 @@ int bulk_wr(usbdev *dev, int len)
 		free(data);
 	return(0);
 }
+
+/**
+ * @brief Send a control request to the bulk interface
+ *
+ */
+int iface_ctrl(usbdev *dev, uint8_t type, uint8_t req, uint16_t v, int len)
+{
+	uint8_t  bmRequestType = 0x01;
+	uint8_t  bRequest      = 0x00;
+	uint16_t wValue        = 0x0000;
+	uint16_t wIndex        = 0x0000;
+	uint16_t wLength       = 0;
+	unsigned char data[4]  = {1,2,3,4};
+	unsigned int  timeout  = 500;
+	int result;
+
+	bmRequestType |= type;
+	bRequest = req;
+	wValue   = v;
+	wLength  = len;
+
+	log_title("Interface control");
+
+	result = libusb_control_transfer(dev, bmRequestType, bRequest, wValue, wIndex, data, wLength, timeout);
+	if ((wLength == 0) && (result == 0))
+	{
+		printf("OK ! len=0 result=0");
+	}
+	else if ((wLength > 0) && (result > 0))
+	{
+		printf("OK ! len=%d result=%d", wLength, result);
+	}
+	else
+	{
+		printf("failed %d [%s]", result, libusb_strerror(result));
+		log_fail();
+		return(result);
+	}
+	log_success();
+	return(0);
+}
+/* EOF */

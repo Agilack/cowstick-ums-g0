@@ -38,6 +38,28 @@
 #define USB_EP_ISO     2
 #define USB_EP_INT     3
 
+typedef struct __attribute__((packed))
+{
+	u8  bmRequestType;
+	u8  bRequest;
+	u16 wValue;
+	u16 wIndex;
+	u16 wLength;
+} usb_ctrl_request;
+
+/**
+ * @brief USB interface description structure
+ */
+typedef struct usb_if_drv_s
+{
+	void (*reset)(void);
+	void (*enable)(int cfg_id);
+	int  (*ctrl_req)(usb_ctrl_request *req, uint len, u8 *data);
+} usb_if_drv;
+
+/**
+ * @brief USB endpoint description structure
+ */
 typedef struct usb_ep_def_s
 {
 	int (*rx)(u8 *data, uint len);
@@ -50,5 +72,6 @@ void usb_periodic(void);
 
 void usb_send(const u8 ep, const u8 *data, unsigned int len);
 void usb_ep_configure(u8 ep, u8 type, usb_ep_def *def);
+int  usb_if_register(uint num, usb_if_drv *new_if);
 
 #endif

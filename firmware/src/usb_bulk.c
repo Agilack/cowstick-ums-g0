@@ -18,8 +18,13 @@
 #include "usb.h"
 #include "usb_bulk.h"
 
+static int  if_ctrl(usb_ctrl_request *req, uint len, u8 *data);
+static void if_enable(int cfg_id);
+static void if_reset(void);
 static int usb_bulk_rx(u8 *data, uint len);
 static int usb_bulk_tx(void);
+
+static usb_if_drv bulk_if;
 
 /**
  * @brief Initialize generic BULK module
@@ -28,43 +33,15 @@ static int usb_bulk_tx(void);
  */
 void usb_bulk_init(void)
 {
+	/* Configure and register interface */
+	bulk_if.reset  = if_reset;
+	bulk_if.enable = if_enable;
+	bulk_if.ctrl_req = if_ctrl;
+	usb_if_register(0, &bulk_if);
+
 	uart_puts("USB_BULK: Initialized\r\n");
 }
 
-/**
- * @brief Enable generic BULK interface
- *
- * This function is called by USB core driver when enumeration is complete and
- * a device configuration has been selected. At this point, it is possible to
- * configure and activate interface endpoints.
- */
-void usb_bulk_enable(void)
-{
-	usb_ep_def ep_def;
-
-	/* Configure RX endpoint */
-	ep_def.rx = usb_bulk_rx;
-	ep_def.tx_complete = 0;
-	usb_ep_configure(2, USB_EP_BULK, &ep_def);
-	/* Configure TX endpoint */
-	ep_def.rx = 0;
-	ep_def.tx_complete = usb_bulk_tx;
-	usb_ep_configure(1, USB_EP_BULK, &ep_def);
-
-	uart_puts("USB_BULK: Enabled\r\n");
-}
-
-/**
- * @brief Reset generic BULK interface
- *
- * This function is called by USB core driver when a bus reset is detected. All
- * data transfer are abort and the interface must wait the next "enable" event
- * to restart communication.
- */
-void usb_bulk_reset(void)
-{
-	uart_puts("USB_BULK: Reset\r\n");
-}
 
 /* -------------------------------------------------------------------------- */
 /* --                                                                      -- */
@@ -134,5 +111,98 @@ static int usb_bulk_tx(void)
 {
 	uart_puts("USB_BULK: TX complete\r\n");
 	return(0);
+}
+
+/**
+ * @brief Process a control request sent to the interface
+ *
+ * @param req Pointer to a structure with the received control packet
+ * @param len Length of packet
+ */
+static int if_ctrl(usb_ctrl_request *req, uint len, u8 *data)
+{
+	u32 value = 1;
+
+	uart_puts("USB_BULK: Control request (len=");
+	uart_putdec(len);
+	uart_puts(")\r\n");
+
+	if (data != 0)
+	{
+		value = *(volatile u32 *)data;
+		uart_puts("Receive DATA phase ");
+		uart_puthex(value & 0xFF, 8);
+		if (len > 1)
+		{
+			uart_puts(" ");
+			uart_puthex((value >> 8) & 0xFF, 8);
+		}
+		if (len > 2)
+		{
+			uart_puts(" ");
+			uart_puthex((value >> 16) & 0xFF, 8);
+		}
+		if (len > 3)
+		{
+			uart_puts(" ");
+			uart_puthex((value >> 24) & 0xFF, 8);
+		}
+		uart_puts("\r\n");
+		return(1);
+	}
+
+	uart_puts("bmRequestType="); uart_puthex(req->bmRequestType, 8);
+	uart_puts(" bRequest=");     uart_puthex(req->bRequest, 8);
+	uart_puts(" wValue=");       uart_puthex(req->wValue, 16);
+	uart_puts(" wIndex=");       uart_puthex(req->wIndex, 16);
+	uart_puts(" wLength=");      uart_puthex(req->wLength, 16);
+	uart_puts("\r\n");
+
+	/* If request is Device-to-Host and data length is not nul */
+	if ((req->bmRequestType & 0x80) && (req->wLength > 0))
+	{
+		/* Then, send a data response with dummy payload */
+		usb_send(0, (u8*)&value, 1);
+		return(1);
+	}
+
+	return(0);
+}
+
+/**
+ * @brief Enable generic BULK interface
+ *
+ * This function is called by USB core driver when enumeration is complete and
+ * a device configuration has been selected. At this point, it is possible to
+ * configure and activate interface endpoints.
+ */
+static void if_enable(int cfg_id)
+{
+	usb_ep_def ep_def;
+
+	(void)cfg_id;
+
+	/* Configure RX endpoint */
+	ep_def.rx = usb_bulk_rx;
+	ep_def.tx_complete = 0;
+	usb_ep_configure(2, USB_EP_BULK, &ep_def);
+	/* Configure TX endpoint */
+	ep_def.rx = 0;
+	ep_def.tx_complete = usb_bulk_tx;
+	usb_ep_configure(1, USB_EP_BULK, &ep_def);
+
+	uart_puts("USB_BULK: Enabled\r\n");
+}
+
+/**
+ * @brief Reset generic BULK interface
+ *
+ * This function is called by USB core driver when a bus reset is detected. All
+ * data transfer are abort and the interface must wait the next "enable" event
+ * to restart communication.
+ */
+static void if_reset(void)
+{
+	uart_puts("USB_BULK: Reset\r\n");
 }
 /* EOF */

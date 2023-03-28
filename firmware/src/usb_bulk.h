@@ -17,8 +17,6 @@
 #define USB_BULK_H
 
 void usb_bulk_init(void);
-void usb_bulk_reset(void);
-void usb_bulk_enable(void);
 
 #endif
 /* EOF */

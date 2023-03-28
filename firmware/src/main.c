@@ -19,6 +19,7 @@
 #include "spi.h"
 #include "uart.h"
 #include "usb.h"
+#include "usb_bulk.h"
 
 void test_mem(void);
 
@@ -61,6 +62,7 @@ int main(void)
 		}
 	}
 	usb_init();
+	usb_bulk_init();
 	usb_start();
 
 #ifdef TEST_MEM

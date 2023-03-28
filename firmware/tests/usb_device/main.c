@@ -18,10 +18,12 @@
 #include <unistd.h>
 #include <libusb-1.0/libusb.h>
 
+#define STRING_COUNT 3
+
 typedef libusb_device_handle usbdev;
 
 int ep0_clear_feature(usbdev *dev, int feature);
-int ep0_get_status(usbdev *dev);
+int device_get_status(usbdev *dev);
 int ep0_get_configuration(usbdev *dev);
 int ep0_get_descriptor(usbdev *dev, int id);
 int ep0_get_interface (usbdev *dev, int id);
@@ -29,6 +31,12 @@ int ep0_get_string(usbdev *dev, int id);
 int ep0_set_descriptor(usbdev *dev);
 int ep0_set_feature(usbdev *dev, int feature);
 int ep0_set_interface(usbdev *dev, int index, int value);
+int endpoint_clear_feature(usbdev *dev, int feature);
+int endpoint_get_status(usbdev *dev, unsigned int id);
+int iface_get_status(usbdev *dev, unsigned int id);
+int iface_clear_feature(usbdev *dev, int feature);
+int bogus_get_status(usbdev *dev);
+int bogus_std_request(usbdev *dev);
 void log_title(char *str);
 void log_fail(void);
 void log_success(void);
@@ -53,7 +61,7 @@ int main (int argc, char **argv)
 		goto complete;
 	}
 
-	ep0_get_status(dev);
+	device_get_status(dev);
 	/* Get device descriptor */
 	ep0_get_descriptor(dev, 1);
 	/* Get configuration descriptor */
@@ -62,7 +70,7 @@ int main (int argc, char **argv)
 	ep0_get_string(dev, 0);
 	ep0_get_string(dev, 1);
 	ep0_get_string(dev, 2);
-	ep0_get_string(dev, 3);
+	ep0_get_string(dev, 42);
 	/* Get device qualifier */
 	ep0_get_descriptor(dev, 6);
 	/**/
@@ -74,6 +82,14 @@ int main (int argc, char **argv)
 	ep0_set_descriptor(dev);
 	/* Try to get an unknown/invalid descriptor */
 	ep0_get_descriptor(dev, 0);
+	iface_get_status(dev, 0);
+	iface_clear_feature(dev, 1);
+	endpoint_get_status(dev, 1);
+	endpoint_clear_feature(dev, 0); // Test valid feature
+	endpoint_clear_feature(dev, 3); // Test invalid feature
+	bogus_get_status(dev);
+	bogus_std_request(dev);
+
 
 complete:
 	if (dev)
@@ -144,12 +160,16 @@ int ep0_get_descriptor(usbdev *dev, int id)
 	log_title("GET_DESCRIPTOR");
 
 	result = libusb_control_transfer(dev, bmRequestType, bRequest, wValue, wIndex, data, wLength, timeout);
-	if (result > 0)
+	if ((id > 0) && (result > 0))
 	{
 		int i;
 		printf("(%.2X)", id);
 		for (i = 0; i < result; i++)
 			printf(" %.2X", data[i]);
+	}
+	else if ((id == 0) && (result == -9))
+	{
+		printf("Ok, receive a RequestError for invalid descriptor id");
 	}
 	else if (result == 0)
 	{
@@ -223,7 +243,7 @@ int ep0_get_string(usbdev *dev, int id)
 	printf("String %d : ", id);
 
 	result = libusb_control_transfer(dev, bmRequestType, bRequest, wValue, wIndex, data, wLength, timeout);
-	if (result > 0)
+	if ((id < STRING_COUNT) && (result > 0))
 	{
 		int i;
 		if (id > 0)
@@ -236,6 +256,10 @@ int ep0_get_string(usbdev *dev, int id)
 			for (i = 0; i < result; i++)
 				printf(" %.2X", data[i]);
 		}
+	}
+	else if ((id >= STRING_COUNT) && (result == -9))
+	{
+		printf("Ok, receive a RequestError for invalid string id");
 	}
 	else if (result == 0)
 	{
@@ -253,7 +277,7 @@ int ep0_get_string(usbdev *dev, int id)
 	return(0);
 }
 
-int ep0_get_status(usbdev *dev)
+int device_get_status(usbdev *dev)
 {
 	int result;
 	unsigned char value[2] = {0};
@@ -397,6 +421,181 @@ int ep0_clear_feature(usbdev *dev, int feature)
 		printf("failed %d [%s]", result, libusb_strerror(result));
 		log_fail();
 		return(result);
+	}
+	log_success();
+	return(0);
+}
+
+int bogus_get_status(usbdev *dev)
+{
+	uint8_t  bmRequestType = 0x87; /* Device to Host, Reserved */
+	uint8_t  bRequest      = 0x00; /* GET_STATUS */
+	uint16_t wIndex        = 0x0000;
+	int result;
+	unsigned char value[2] = {0};
+
+	log_title("Try GET_STATUS on reserved recipient");
+
+	result = libusb_control_transfer(dev, bmRequestType, bRequest, 0, wIndex, value, 2, 100);
+	if (result != -9)
+	{
+		printf("failed %d [%s]", result, libusb_strerror(result));
+		log_fail();
+		return(1);
+	}
+	log_success();
+	return(0);
+}
+
+int bogus_std_request(usbdev *dev)
+{
+	uint8_t  bmRequestType = 0xE0; /* Device to Host, Reserved, Device */
+	uint8_t  bRequest      = 0x00;
+	uint16_t wIndex        = 0x0000;
+	int result;
+	unsigned char value[2] = {0};
+
+	log_title("Try unspecified request");
+
+	result = libusb_control_transfer(dev, bmRequestType, bRequest, 0, wIndex, value, 2, 100);
+	if (result != -9)
+	{
+		printf("failed %d [%s]", result, libusb_strerror(result));
+		log_fail();
+		return(1);
+	}
+	log_success();
+	return(0);
+}
+
+int endpoint_clear_feature(usbdev *dev, int feature)
+{
+	uint8_t  bmRequestType = 0x02; /* Host to Device, Endpoint */
+	uint8_t  bRequest      = 0x01; /* CLEAR_FEATURE */
+	uint16_t wValue        = 0x0000;
+	uint16_t wIndex        = 0x0000;
+	uint16_t wLength       = 0;
+	unsigned char data[4]  = {0};
+	unsigned int  timeout  = 500;
+	int result;
+
+	wValue |= (feature & 0xFF);
+
+	log_title("Endpoint CLEAR_FEATURE");
+
+	printf(" feature=%d", feature);
+
+	result = libusb_control_transfer(dev, bmRequestType, bRequest, wValue, wIndex, data, wLength, timeout);
+	if ((wValue == 0) && (result == 0))
+	{
+		/* OK, clear ENDPOINT_HALT */
+		printf(" (ENDPOINT_HALT cleared)");
+	}
+	else if ((wValue != 0) && (result == -9))
+	{
+		/* OK, clear an unspecified feature */
+		printf(" (send invalid feature, receive Request Error)");
+	}
+	else
+	{
+		printf("failed %d [%s]", result, libusb_strerror(result));
+		log_fail();
+		return(result);
+	}
+	log_success();
+	return(0);
+}
+
+
+int endpoint_get_status(usbdev *dev, unsigned int id)
+{
+	uint8_t  bmRequestType = 0x82; /* Device to Host, Endpoint */
+	uint8_t  bRequest      = 0x00; /* GET_STATUS */
+	uint16_t wIndex        = 0x0000;
+	int result;
+	unsigned char value[2] = {0};
+
+	log_title("Endpoint GET_STATUS");
+
+	wIndex = id;
+
+	result = libusb_control_transfer(dev, bmRequestType, bRequest, 0, wIndex, value, 2, 100);
+	if (result < 0)
+	{
+		printf("failed %d [%s]", result, libusb_strerror(result));
+		log_fail();
+		return(1);
+	}
+	else if (result == 0)
+	{
+	}
+	else
+	{
+		printf("%.2X%.2x", value[1], value[0]);
+	}
+	log_success();
+	return(0);
+}
+
+int iface_clear_feature(usbdev *dev, int feature)
+{
+	uint8_t  bmRequestType = 0x01; /* Host to Device, Interface */
+	uint8_t  bRequest      = 0x01; /* CLEAR_FEATURE */
+	uint16_t wValue        = 0x0000;
+	uint16_t wIndex        = 0x0000;
+	uint16_t wLength       = 0;
+	unsigned char data[4]  = {0};
+	unsigned int  timeout  = 500;
+	int result;
+
+	wValue |= (feature & 0xFF);
+
+	log_title("Interface CLEAR_FEATURE");
+
+	result = libusb_control_transfer(dev, bmRequestType, bRequest, wValue, wIndex, data, wLength, timeout);
+	if (result == -9)
+	{
+		/* Normal case */
+	}
+	else
+	{
+		printf("failed %d [%s]", result, libusb_strerror(result));
+		log_fail();
+		return(result);
+	}
+	log_success();
+	return(0);
+}
+
+/**
+ * @brief Try a GET_STATUS on interface
+ *
+ */
+int iface_get_status(usbdev *dev, unsigned int id)
+{
+	uint8_t  bmRequestType = 0x81; /* Device to Host, Interface */
+	uint8_t  bRequest      = 0x00; /* GET_STATUS */
+	uint16_t wIndex        = 0x0000;
+	int result;
+	unsigned char value[2] = {0};
+
+	log_title("Interface GET_STATUS");
+
+	wIndex = id;
+
+	result = libusb_control_transfer(dev, bmRequestType, bRequest, 0, wIndex, value, 2, 100);
+	if (result < 0)
+	{
+		printf("failed %d [%s]", result, libusb_strerror(result));
+		log_fail();
+		return(1);
+	}
+	else if (result == 0)
+	{
+	}
+	else
+	{
+		printf("%.2X%.2x", value[1], value[0]);
 	}
 	log_success();
 	return(0);

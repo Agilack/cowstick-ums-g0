@@ -13,24 +13,38 @@
  * program, see LICENSE.md file for more details.
  * This program is distributed WITHOUT ANY WARRANTY.
  */
+#include "libc.h"
 #include "types.h"
 #include "uart.h"
 #include "usb_desc.h"
 #include "usb.h"
-#include "usb_bulk.h"
 
 #ifdef USB_DEBUG
-#define DBG_IT_MAX   100
 #define DBG_IRQ      (1 << 8)
 #define DBG_EP0_REG  (1 << 9)
+#define DBG_EP0_REQ  (1 << 10)
 static u32  dbg_flags;
-static uint it_count;
+#endif
+
+/* If the number of device interface has not been defined, set as 1 */
+#ifndef USB_IF_COUNT
+#define USB_IF_COUNT 1
+#endif
+/* If the number of endpoints has not been defined, set as 1 */
+#ifndef USB_EP_COUNT
+#define USB_EP_COUNT 1
+#endif
+/* If the number of strings has not been defined, set as 0 */
+#ifndef USB_STR_COUNT
+#define USB_STR_COUNT 0
 #endif
 
 uint state;
 uint dev_addr = 0;
+static usb_ctrl_request ep0_req;
 
-static usb_ep_def ep_defs[7];
+static usb_if_drv if_drv[USB_IF_COUNT];
+static usb_ep_def ep_defs[USB_EP_COUNT];
 
 static void ep0_config(void);
 static void ep0_send(const u8 *data, unsigned int len);
@@ -49,16 +63,14 @@ void usb_init(void)
 
 #ifdef USB_DEBUG
 	dbg_flags = DBG_IRQ /*| DBG_EP0_REG*/;
-	it_count = 0;
 #endif
 	dev_addr = 0;
 	state = USB_ST_POWERED;
 
-	for (i = 0; i < 7; i++)
-	{
-		ep_defs[i].rx = 0;
-		ep_defs[i].tx_complete = 0;
-	}
+	/* Clear interface driver table */
+	memset(&if_drv,  0, sizeof(usb_if_drv) * USB_IF_COUNT);
+	/* Clear endpoint description table */
+	memset(&ep_defs, 0, sizeof(usb_ep_def) * USB_EP_COUNT);
 
 	/* Activate USB */
 	reg_set(RCC_APBENR1, (1 << 13));
@@ -77,9 +89,6 @@ void usb_init(void)
 
 	for (i = 0; i < 0x4000; i++)
 		asm volatile("nop");
-
-	/* Initialize USB upper layers (class and interfaces) */
-	usb_bulk_init();
 
 	/* Enable USB interrupt into NVIC */
 	reg_wr(0xE000E100, (1 << 8)); /* USB */
@@ -138,7 +147,7 @@ void usb_send(const u8 ep, const u8 *data, unsigned int len)
 	u32 ep_r;
 
 	/* Sanity check */
-	if ((ep == 0) || (ep > 7))
+	if (/*(ep == 0) || */(ep > 7))
 		return;
 
 	/* Read current EP TX buffer address */
@@ -232,6 +241,30 @@ void usb_ep_configure(u8 ep, u8 type, usb_ep_def *def)
 }
 
 /**
+ * @brief Register a driver for an interface
+ *
+ * This function allow to associate a software module to an interface. All
+ * upper layers (class drivers) need to receive some bus events (reset, enable)
+ * This is done using an interface driver. On startup, all upper layers can
+ * call this function to register themself as handler for specified interface.
+ *
+ * @param num    Identifier of the interface to register
+ * @param new_if Pointer to the interface structure to register
+ */
+int usb_if_register(uint num, usb_if_drv *new_if)
+{
+#ifdef USB_ASSERT
+	// Sanity check
+	if ((new_if == 0) || (num >= USB_IF_COUNT))
+		return(-1);
+#endif
+
+	memcpy(&if_drv[num], new_if, sizeof(usb_if_drv));
+
+	return(0);
+}
+
+/**
  * @brief Copy date to USB packet memory array
  *
  * The memory used by USB must be written only with 32bits words. As buffer of
@@ -266,16 +299,16 @@ void memcpy_to_pma(u8 *dst, const u8 *src, unsigned int len)
 /* --                                                                      -- */
 /* -------------------------------------------------------------------------- */
 
-static inline void ep0_feature_clear(u32 hdr);
-static inline void ep0_feature_set(u32 hdr);
-static inline void ep0_get_descriptor(void);
+static inline void ep0_feature_clear(usb_ctrl_request *req);
+static inline void ep0_feature_set(usb_ctrl_request *req);
+static inline void ep0_get_descriptor(usb_ctrl_request *req);
 static inline void ep0_get_configuration(void);
 static inline void ep0_get_interface(void);
-static inline void ep0_get_status(void);
-static inline void ep0_set_address(u32 hdr);
-static inline void ep0_set_configuration(u32 hdr);
+static inline void ep0_get_status(usb_ctrl_request *req);
+static inline void ep0_set_address(usb_ctrl_request *req);
+static inline void ep0_set_configuration(usb_ctrl_request *req);
 static inline void ep0_set_descriptor(void);
-static inline void ep0_set_interface(u32 hdr);
+static inline void ep0_set_interface(usb_ctrl_request *req);
 
 /**
  * @brief Process a packet received on endpoint
@@ -395,44 +428,91 @@ static void ep0_config(void)
 /**
  * @brief Decode and process a CLEAR_FEATURE request
  *
- * @param hdr First four bytes (header) of request
+ * @param req Pointer to a structure with the received packet
  */
-static inline void ep0_feature_clear(u32 hdr)
+static inline void ep0_feature_clear(usb_ctrl_request *req)
 {
-#ifdef USB_INFO
-	u16 wValue;
-	wValue = (u16)(hdr >> 16);
+	unsigned char rcpt;
 
+	rcpt = (req->bmRequestType & 0x1F);
+
+#ifdef USB_INFO
 	uart_puts("USB: Clear feature ");
-	uart_puthex(wValue, 16);
+	if (rcpt == 0)      uart_puts("DEVICE");
+	else if (rcpt == 1) uart_puts("INTERFACE");
+	else if (rcpt == 2) uart_puts("ENDPOINT");
+	else if (rcpt == 3) uart_puts("'other'");
+	else                uart_puts("Unknown/Unsupported");
+	uart_puts(" wValue=");
+	uart_puthex(req->wValue, 16);
 	uart_puts("\r\n");
-#else
-	(void)hdr;
 #endif
+
+	if ((rcpt == 0) && (req->wValue == 1))
+	{
+		// TODO: Handle DEVICE_REMOTE_WAKEUP
+	}
+	else if ((rcpt == 0) &&( req->wValue == 2))
+	{
+		// TODO: Handle TEST_MODE
+	}
+	else if ((rcpt == 2) && (req->wValue == 0))
+	{
+		// TODO: Handle ENDPOINT_HALT
+	}
+	else
+		goto err;
+
 	/* Send ZLP to ack setup and ask data phase */
 	ep0_send(0, 0);
+	return;
+err:
+	ep0_stall();
 }
 
 /**
  * @brief Decode and process a SET_FEATURE request
  *
- * @param hdr First four bytes (header) of request
+ * @param req Pointer to a structure with the received packet
  */
-static inline void ep0_feature_set(u32 hdr)
+static inline void ep0_feature_set(usb_ctrl_request *req)
 {
-#ifdef USB_INFO
-	u16 wValue;
-	wValue = (u16)(hdr >> 16);
+	unsigned char rcpt;
 
+	rcpt = (req->bmRequestType & 0x1F);
+
+#ifdef USB_INFO
 	uart_puts("USB: Set feature ");
-	uart_puthex(wValue, 16);
+	if (rcpt == 0)      uart_puts("DEVICE");
+	else if (rcpt == 1) uart_puts("INTERFACE");
+	else if (rcpt == 2) uart_puts("ENDPOINT");
+	else if (rcpt == 3) uart_puts("'other'");
+	else                uart_puts("Unknown/Unsupported");
+	uart_puts(" wValue=");
+	uart_puthex(req->wValue, 16);
 	uart_puts("\r\n");
-#else
-	(void)hdr;
 #endif
+
+	if ((rcpt == 0) && (req->wValue == 1))
+	{
+		// TODO: Handle DEVICE_REMOTE_WAKEUP
+	}
+	else if ((rcpt == 0) &&( req->wValue == 2))
+	{
+		// TODO: Handle TEST_MODE
+	}
+	else if ((rcpt == 2) && (req->wValue == 0))
+	{
+		// TODO: Handle ENDPOINT_HALT
+	}
+	else
+		goto err;
 
 	/* Send ZLP to ack setup and ask data phase */
 	ep0_send(0, 0);
+	return;
+err:
+	ep0_stall();
 }
 
 /**
@@ -440,27 +520,18 @@ static inline void ep0_feature_set(u32 hdr)
  *
  * This function is called by the Endpoint-0 reception handler (ep0_rx) when a
  * get descriptor request has been received. See ep0_rx() for more details.
+ *
+ * @param req Pointer to a structure with the received packet
  */
-static inline void ep0_get_descriptor(void)
+static inline void ep0_get_descriptor(usb_ctrl_request *req)
 {
-	u8 *pma = (u8 *)USB_RAM;
-	u8   pkt_rx[4];
-	u32  v;
+	u8   type, index;
 	uint len;
-	//uint wIndex; // Not used yet
-	uint wLength;
 
-	/* Read current EP0 RX buffer address */
-	v = (*(volatile u32*)(pma + 0x4) & 0xFFFF);
-
-	/* Copy received packet to a byte array */
-	*(u32 *)&pkt_rx[0] = *(volatile u32*)(pma + v);
-	v = *(volatile u32*)(pma + v + 4);
-	// wIndex  = (v & 0xFFFF); // Not used yet
-	wLength = ((v >> 16) & 0xFFFF);
+	type = (u8)(req->wValue >> 8);
 
 	/* Get: Device Descriptor */
-	if (pkt_rx[3] == 0x01)
+	if (type == 0x01)
 	{
 #ifdef USB_INFO
 		uart_puts("USB: Get Device Descriptor\r\n");
@@ -468,23 +539,23 @@ static inline void ep0_get_descriptor(void)
 		ep0_send(desc_device, desc_device[0]);
 	}
 	/* Get: Configuration descriptor */
-	else if (pkt_rx[3] == 0x02)
+	else if (type == 0x02)
 	{
 #ifdef USB_INFO
 		uart_puts("USB: Get Configuration Descriptor (wLength=");
-		uart_putdec(wLength);
+		uart_putdec(req->wLength);
 		uart_puts(")\r\n");
 #endif
 		/* Get length of the descriptor */
 		len = sizeof(desc_cfg);
 		/* If this length is longer than data requested by host */
-		if (len > wLength)
+		if (len > req->wLength)
 			/* Then, return no more than requested data */
-			len = wLength;
+			len = req->wLength;
 		ep0_send(desc_cfg, len);
 	}
 	/* Get: Device Qualifier  */
-	else if (pkt_rx[3] == 0x06)
+	else if (type == 0x06)
 	{
 #ifdef USB_INFO
 		uart_puts("USB: Get Device Qualifier\r\n");
@@ -492,35 +563,33 @@ static inline void ep0_get_descriptor(void)
 		ep0_send(desc_dev_qualifier, desc_dev_qualifier[0]);
 	}
 	/* Get: String Descriptor */
-	else if (pkt_rx[3] == 0x03)
+	else if (type == 0x03)
 	{
+		index = (u8)(req->wValue & 0xFF);
 #ifdef USB_INFO
 		uart_puts("USB: Get String Descriptor ");
-		uart_puthex(pkt_rx[2], 8);
+		uart_putdec(index);
 		uart_puts("\r\n");
 #endif
-		/* String index 0 : Lang */
-		if (pkt_rx[2] == 0x00)
-			ep0_send(usbdev_str_lang, usbdev_str_lang[0]);
-		/* String index 1 : Manufacturer */
-		else if (pkt_rx[2] == 0x01)
-			ep0_send(usbdev_str_manuf, usbdev_str_manuf[0]);
-		/* String index 2 : Product */
-		else if (pkt_rx[2] == 0x02)
-			ep0_send(usbdev_str_product, usbdev_str_product[0]);
+		if (index < USB_STR_COUNT)
+		{
+			const u8 *desc = usbdev_strings[index];
+			ep0_send(desc, desc[0]);
+		}
 		else
 		{
-			uart_puts("USB: Unknown String Descriptor index\r\n");
+			uart_puts("USB: Unknown String Descriptor index ");
+			uart_putdec(index);
+			uart_puts("\r\n");
 			ep0_stall();
 		}
 	}
 	else
 	{
-		uart_puts("USB: GET_DESCRIPTOR (unknown) ");
-		uart_puthex(pkt_rx[0], 8);
-		uart_puthex(pkt_rx[1], 8);
-		uart_puthex(pkt_rx[2], 8);
-		uart_puthex(pkt_rx[3], 8);
+		uart_puts("USB: GET_DESCRIPTOR (unknown)");
+		uart_puts(" wValue=");  uart_puthex(req->wValue, 16);
+		uart_puts(" wIndex=");  uart_puthex(req->wIndex, 16);
+		uart_puts(" wLength="); uart_puthex(req->wLength, 16);
 		uart_puts("\r\n");
 		ep0_stall();
 	}
@@ -571,28 +640,84 @@ static inline void ep0_get_interface(void)
  * This function is called by the Endpoint-0 reception handler (ep0_rx) when
  * host ask device status. Device status content is defined by USB spec with
  * only two option bits (power and wakeup).
+ *
+ * @param req Pointer to a structure with the received packet
  */
-static inline void ep0_get_status(void)
+static inline void ep0_get_status(usb_ctrl_request *req)
 {
+	unsigned char  rcpt;
 	unsigned short status;
-#ifdef USB_INFO
-	uart_puts("EP0: GET_STATUS\r\n");
-#endif
-	/* Bit 1 : Remote wakeup */
-	/* Bit 0 : Self powered  */
-	status = 0;
 
+	rcpt = (req->bmRequestType & 0x1F);
+
+#ifdef USB_INFO
+	uart_puts("EP0: GET_STATUS for ");
+	if (rcpt == 0)
+		uart_puts("device");
+	else if (rcpt == 1)
+	{
+		uart_puts("interface ");
+		uart_puthex(req->wIndex, 16);
+	}
+	else if (rcpt == 2)
+	{
+		uart_puts("endpoint ");
+		uart_puthex(req->wIndex, 16);
+	}
+	else if (rcpt == 3)
+		uart_puts("'other'");
+	else
+	{
+		uart_puts("unsupported/reserved ");
+		uart_puthex(rcpt, 12);
+	}
+	uart_puts("\r\n");
+#endif
+
+	/* Request is for the device itself */
+	if (rcpt == 0)
+	{
+		/* Bit 1 : Remote wakeup */
+		/* Bit 0 : Self powered  */
+		status = 0;
+	}
+	/* Request is for an interface */
+	else if (rcpt == 1)
+	{
+		if (req->wIndex >= USB_IF_COUNT)
+			goto err;
+		/* According to 9.4.5 interface status is always 0 */
+		status = 0;
+	}
+	/* Request is for an endpoint */
+	else if (rcpt == 2)
+	{
+		if (req->wIndex >= USB_EP_COUNT)
+			goto err;
+		// TODO Test that specified endpoint is not Halt
+		status = 0;
+	}
+	else
+	{
+		// TODO Log error ?
+		goto err;
+	}
+
+	/* Send response */
 	ep0_send((u8 *)&status, 2);
+	return;
+err:
+	ep0_stall();
 }
 
 /**
  * @brief Decode and process a SET_ADDRESS transaction
  *
- * @param hdr First four bytes (header) of request
+ * @param req Pointer to a structure with the received packet
  */
-static inline void ep0_set_address(u32 hdr)
+static inline void ep0_set_address(usb_ctrl_request *req)
 {
-	dev_addr = ((hdr >> 16) & 0x7F);
+	dev_addr = (req->wValue & 0x7F);
 
 #ifdef USB_INFO
 	uart_puts("USB: Set address ");
@@ -607,20 +732,24 @@ static inline void ep0_set_address(u32 hdr)
 /**
  * @brief Decode and process a SET_CONFIGURATION transaction
  *
- * @param hdr First four bytes (header) of request
+ * @param req Pointer to a structure with the received packet
  */
-static inline void ep0_set_configuration(u32 hdr)
+static inline void ep0_set_configuration(usb_ctrl_request *req)
 {
-	u16 wValue;
+	int i;
 
-	wValue = (u16)(hdr >> 16);
-
+#ifdef USB_INFO
 	uart_puts("USB: Set Configuration ");
-	uart_putdec(wValue);
+	uart_putdec(req->wValue);
 	uart_puts("\r\n");
+#endif
 
-	/* At this point, it is possible to enable class driver(s) */
-	usb_bulk_enable();
+	/* At this point, it is possible to enable interface driver(s) */
+	for (i = 0; i < USB_IF_COUNT; i++)
+	{
+		if (if_drv[i].enable != 0)
+			if_drv[i].enable(req->wValue);
+	}
 
 	/* Send ZLP to ack setup and ask data phase */
 	ep0_send(0, 0);
@@ -645,20 +774,16 @@ static inline void ep0_set_descriptor(void)
 /**
  * @brief Decode and process a SET_INTERFACE request
  *
- * @param hdr First four bytes (header) of request
+ * @param req Pointer to a structure with the received packet
  */
-static inline void ep0_set_interface(u32 hdr)
+static inline void ep0_set_interface(usb_ctrl_request *req)
 {
 #ifdef USB_INFO
-	u16 wValue;
-
-	wValue = (u16)(hdr >> 16);
-
 	uart_puts("USB: Set Interface ");
-	uart_putdec(wValue);
+	uart_putdec(req->wValue);
 	uart_puts("\r\n");
 #else
-	(void)hdr;
+	(void)req;
 #endif
 	/* Send ZLP to ack setup and ask data phase */
 	ep0_send(0, 0);
@@ -725,76 +850,151 @@ static void ep0_stall(void)
 	reg_wr(USB_CHEPxR(0), ep0r);
 }
 
+/**
+ * @brief Process an incoming packet on Endpoint-0 (Control)
+ *
+ * This function is called by irs handler when a packet has been received on the
+ * endpoint-0. The goal of this function is to extract and decode the request
+ * and route to dedicated processing functions (see USB2 specs chap 9.3)
+ */
 static inline void ep0_rx(void)
 {
-#ifdef USB_DEBUG
-	char buf_in[32];
-#endif
 	u8 *pma = (u8 *)USB_RAM;
+	u8 *data;
 	uint len;
-	u32 val;
-	u32 ep0r;
+	u32  chep, ep0r;
 
+	chep = reg_rd(USB_CHEPxR(0));
 	ep0r = *(volatile u32*)(pma + 0x4);
-	val = *(volatile u32*)(pma + 0x40);
+	len  = ((ep0r >> 16) & 0x3FF);
+	data = 0;
 
 #ifdef USB_DEBUG
-	if (dbg_flags & DBG_EP0_REG)
+	if ((dbg_flags & DBG_EP0_REG) || (dbg_flags & DBG_EP0_REQ))
 	{
-		uart_puts("EP0_RX: "); uart_puthex(ep0r, 32);
-		uart_puts(" > ");      uart_puthex(val, 32);
+		uart_puts("EP0_RX: CHEP0R="); uart_puthex(chep, 32);
+		uart_puts(" CHEP_BD=");       uart_puthex(ep0r, 32);
 		uart_puts("\r\n");
 	}
 #endif
-	len = ((ep0r >> 16) & 0x3FF);
-	if (len == 0)
-		goto rx_end;
 
-	/* GET_STATUS */
-	if ((val & 0xFFFF) == 0x0080)
-		ep0_get_status();
-	/* GET_DESCRIPTOR */
-	else if ((val & 0xFFFF) == 0x0680)
-		ep0_get_descriptor();
-	/* GET_CONFIGURATION */
-	else if ((val & 0xFFFF) == 0x0880)
-		ep0_get_configuration();
-	/* GET_INTERFACE */
-	else if ((val & 0xFFFF) == 0x0a80)
-		ep0_get_interface();
-	/* CLEAR_FEATURE */
-	else if ((val & 0xFFFF) == 0x0100)
-		ep0_feature_clear(val);
-	/* SET_FEATURE */
-	else if ((val & 0xFFFF) == 0x0300)
-		ep0_feature_set(val);
-	/* SET_ADDRESS */
-	else if ((val & 0xFFFF) == 0x0500)
-		ep0_set_address(val);
-	/* SET_DESCRIPTOR */
-	else if ((val & 0xFFFF) == 0x0700)
-		ep0_set_descriptor();
-	/* SET_CONFIGURATION */
-	else if ((val & 0xFFFF) == 0x0900)
-		ep0_set_configuration(val);
-	/* SET_INTERFACE */
-	else if ((val & 0xFFFF) == 0x0B00)
-		ep0_set_interface(val);
+	/* If received a SETUP packet */
+	if (chep & (1 << 11))
+	{
+		if (len < 8)
+			goto rx_end;
+
+		/* Copy received data into structure */
+		*((u32 *)&ep0_req) = *(volatile u32*)(pma + 0x40);
+		*(u32 *)((u8*)&ep0_req + 4) = *(volatile u32*)(pma + 0x44);
+	}
+	/* In case of a DATA phase with no payload (receive a ZLP) */
+	else if (len == 0)
+		/* Nothing to do, just ignore it */
+		goto rx_end;
+	/* Receive a DATA phase, with a payload */
+	else
+		data = (pma + 0x40);
+
+	/* If received packet is a _standard_ Device-to-Host request */
+	if ((ep0_req.bmRequestType & 0xE0) == 0x80)
+	{
+		switch (ep0_req.bRequest)
+		{
+			/* GET_STATUS */
+			case 0x00:
+				ep0_get_status(&ep0_req);
+				break;
+			/* GET_DESCRIPTOR */
+			case 0x06:
+				ep0_get_descriptor(&ep0_req);
+				break;
+			/* GET_CONFIGURATION */
+			case 0x08:
+				ep0_get_configuration();
+				break;
+			/* GET_INTERFACE */
+			case 0x0a:
+				ep0_get_interface();
+				break;
+			/* Unknown or not supported request */
+			default:
+				ep0_stall();
+		}
+	}
+	/* If received packet is a _standard_ Host-to-Device request */
+	else if ((ep0_req.bmRequestType & 0xE0) == 0)
+	{
+		switch (ep0_req.bRequest)
+		{
+			/* CLEAR_FEATURE */
+			case 0x01:
+				ep0_feature_clear(&ep0_req);
+				break;
+			/* SET_FEATURE */
+			case 0x03:
+				ep0_feature_set(&ep0_req);
+				break;
+			/* SET_ADDRESS */
+			case 0x05:
+				ep0_set_address(&ep0_req);
+				break;
+			/* SET_DESCRIPTOR */
+			case 0x07:
+				ep0_set_descriptor();
+				break;
+			/* SET_CONFIGURATION */
+			case 0x09:
+				ep0_set_configuration(&ep0_req);
+				break;
+			/* SET_INTERFACE */
+			case 0x0B:
+				ep0_set_interface(&ep0_req);
+				break;
+			/* Unknown or not supported request */
+			default:
+				ep0_stall();
+		}
+	}
+	/* If received packet is a class or vendor request for an interface */
+	else if ((ep0_req.bmRequestType & 0x1F) == 0x01)
+	{
+		int result;
+
+		if (ep0_req.wIndex < USB_IF_COUNT)
+		{
+			if (if_drv[ep0_req.wIndex].ctrl_req != 0)
+			{
+				result = if_drv[ep0_req.wIndex].ctrl_req(&ep0_req, len, data);
+				if (result == 0)
+					/* Send ZLP to ack setup and ask data phase */
+					ep0_send(0, 0);
+				else if (result == 1)
+				{
+					/* Response already sent by ctrl_req */
+				}
+				else
+					ep0_stall();
+			}
+			else
+				ep0_stall();
+		}
+		else
+			ep0_stall();
+	}
 	/* Unknown or not supported request */
 	else
 	{
 #ifdef USB_DEBUG
-		// Extract data
-		*(u32 *)&buf_in[0]  = *(volatile u32*)(pma + 0x40);
-		*(u32 *)&buf_in[4]  = *(volatile u32*)(pma + 0x44);
-		*(u32 *)&buf_in[8]  = *(volatile u32*)(pma + 0x48);
-		*(u32 *)&buf_in[12] = *(volatile u32*)(pma + 0x4C);
-		*(u32 *)&buf_in[16] = *(volatile u32*)(pma + 0x50);
-		*(u32 *)&buf_in[20] = *(volatile u32*)(pma + 0x54);
-		*(u32 *)&buf_in[24] = *(volatile u32*)(pma + 0x58);
-		*(u32 *)&buf_in[28] = *(volatile u32*)(pma + 0x5C);
-		// Dump received packet
-		uart_dump((u8*)buf_in, 32);
+		uart_puts("EP0: Unsupported request (len=");
+		uart_putdec(len);
+		uart_puts(")\r\n");
+		uart_puts("bmRequestType="); uart_puthex(ep0_req.bmRequestType, 8);
+		uart_puts(" bRequest=");     uart_puthex(ep0_req.bRequest, 8);
+		uart_puts(" wValue=");       uart_puthex(ep0_req.wValue, 16);
+		uart_puts(" wIndex=");       uart_puthex(ep0_req.wIndex, 16);
+		uart_puts(" wLength=");      uart_puthex(ep0_req.wLength, 16);
+		uart_puts("\r\n");
 #endif
 		ep0_stall();
 	}
@@ -817,12 +1017,19 @@ rx_end:
 #endif
 }
 
+/**
+ * @brief Interrupt handler for USB peripheral
+ *
+ * This function is pointed by the interrupt vector table as the handler for
+ * the USB peripheral (see startup.s)
+ */
 void USB_Handler(void)
 {
 	u32  isr_ack = (1 << 9);
 	uint ep, dir;
 	u32  v = reg_rd(USB_ISTR);
 	u32  ep0r;
+	int  i;
 
 #ifdef USB_DEBUG
 	if (dbg_flags & DBG_IRQ)
@@ -845,8 +1052,12 @@ void USB_Handler(void)
 		/* Reset device address */
 		reg_wr(USB_DADDR, (1 << 7));
 		ep0_config();
-		/* Reset USB class layers */
-		usb_bulk_reset();
+		/* Reset USB class and interfaces layers */
+		for (i = 0; i < USB_IF_COUNT; i++)
+		{
+			if (if_drv[i].reset != 0)
+				if_drv[i].reset();
+		}
 
 		isr_ack = (1 << 10);
 		isr_ack |= ((1 << 11) | (1 << 8));
@@ -912,10 +1123,5 @@ void USB_Handler(void)
 		isr_ack = (1 << 15);
 	}
 	reg_wr(USB_ISTR, ~isr_ack);
-#ifdef USB_DEBUG
-	it_count ++;
-	if ((DBG_IT_MAX > 0) && (it_count >= DBG_IT_MAX))
-		reg_wr(0xE000E180, (1 << 8)); /* Disable USB irq */
-#endif
 }
 /* EOF */

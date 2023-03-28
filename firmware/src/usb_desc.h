@@ -16,6 +16,10 @@
 #ifndef USB_DESC_H
 #define USB_DESC_H
 
+#define USB_IF_COUNT  1
+#define USB_EP_COUNT  7
+#define USB_STR_COUNT 3
+
 const u16 ep_offsets[8][2] = {
 	{0x000, 0x000}, /* EP0 : Control  */
 	{0x180, 0x140}, /* EP1 : Bulk IN  */
@@ -71,6 +75,12 @@ const u8 usbdev_str_product[] __attribute__((aligned(4))) = {
 	'C',0x00, 'o',0x00, 'w',0x00, 's',0x00,
 	't',0x00, 'i',0x00, 'c',0x00, 'k',0x00,
 	'-',0x00, 'u',0x00, 'm',0x00, 's',0x00
+};
+
+const u8 *usbdev_strings[USB_STR_COUNT] = {
+	usbdev_str_lang,
+	usbdev_str_manuf,
+	usbdev_str_product
 };
 #endif
 /* EOF */
