@@ -39,6 +39,8 @@ void uart_putc(u8 c);
 void uart_puts  (char *s);
 void uart_putdec(const u32 v);
 void uart_puthex(const u32 c, const uint len);
+/* Terminal */
+void uart_color(int c);
 /* Debug */
 void uart_dump(u8 *data, uint count);
 

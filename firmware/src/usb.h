@@ -33,10 +33,15 @@
 #define USB_LPMCSR    (u32)(USB + 0x54)
 #define USB_BCDR      (u32)(USB + 0x58)
 
+/* Endpoint types */
 #define USB_EP_BULK    0
 #define USB_EP_CONTROL 1
 #define USB_EP_ISO     2
 #define USB_EP_INT     3
+/* Endpoint states */
+#define USB_EP_STALL   1
+#define USB_EP_NAK     2
+#define USB_EP_VALID   3
 
 typedef struct __attribute__((packed))
 {
@@ -52,6 +57,7 @@ typedef struct __attribute__((packed))
  */
 typedef struct usb_if_drv_s
 {
+	void (*periodic)(void);
 	void (*reset)(void);
 	void (*enable)(int cfg_id);
 	int  (*ctrl_req)(usb_ctrl_request *req, uint len, u8 *data);
@@ -62,6 +68,7 @@ typedef struct usb_if_drv_s
  */
 typedef struct usb_ep_def_s
 {
+	int (*release)(const u8 ep);
 	int (*rx)(u8 *data, uint len);
 	int (*tx_complete)(void);
 } usb_ep_def;
@@ -72,6 +79,7 @@ void usb_periodic(void);
 
 void usb_send(const u8 ep, const u8 *data, unsigned int len);
 void usb_ep_configure(u8 ep, u8 type, usb_ep_def *def);
+void usb_ep_set_state(u8 ep, u8 state);
 int  usb_if_register(uint num, usb_if_drv *new_if);
 
 #endif

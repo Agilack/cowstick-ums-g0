@@ -78,6 +78,38 @@ void USART2_LP2_Handler(void)
 }
 
 /**
+ * @brief Send VT100 escape sequence to change font color
+ *
+ * @param c Color to set (0 for default) (see standard ansi colors)
+ */
+void uart_color(int c)
+{
+	char *str = 0;
+	switch(c)
+	{
+		case 0: str="\x1B[0m";  break;
+		case 1: str="\x1B[31m"; break; // Red
+		case 2: str="\x1B[32m"; break; // Green
+		case 3: str="\x1B[33m"; break; // Yellow
+		case 4: str="\x1B[34m"; break; // Blue
+		case 5: str="\x1B[35m"; break; // Magenta
+		case 6: str="\x1B[36m"; break; // Cyan
+		case 7: str="\x1B[37m"; break; // White
+
+		case 10: str="\x1B[1;30m"; break; // Grey (bright dark)
+		case 11: str="\x1B[1;31m"; break; // Bright Red
+		case 12: str="\x1B[1;32m"; break; // Bright Green
+		case 13: str="\x1B[1;33m"; break; // Bright Yellow
+		case 14: str="\x1B[1;34m"; break; // Bright Blue
+		case 15: str="\x1B[1;35m"; break; // Bright Magenta
+		case 16: str="\x1B[1;36m"; break; // Bright Cyan
+		case 17: str="\x1B[1;37m"; break; // Bright White
+	}
+	if (str)
+		uart_puts(str);
+}
+
+/**
  * @brief Read one byte received on UART
  *
  * @param c Pointer to a byte variable where to store recived data

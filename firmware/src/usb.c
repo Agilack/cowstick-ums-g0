@@ -112,6 +112,7 @@ void usb_start(void)
 	v = (1 << 10); // RST_DCOM
 	v |= (1 << 15); // CTR
 	v |= (1 << 13); // ERR
+	v |= (1 << 14); // Overrun / Underrun
 	//v |= (1 << 11); // SUSP
 	reg_wr(USB_CNTR, v);
 
@@ -130,7 +131,14 @@ void usb_start(void)
  */
 void usb_periodic(void)
 {
-	/* Nothing to do yet */
+	int i;
+
+	/* Call interfaces periodic callback (if any) */
+	for (i = 0; i < USB_IF_COUNT; i++)
+	{
+		if (if_drv[i].periodic != 0)
+			if_drv[i].periodic();
+	}
 }
 
 /**
@@ -166,13 +174,10 @@ void usb_send(const u8 ep, const u8 *data, unsigned int len)
 	ep_r = reg_rd(USB_CHEPxR(ep));
 	ep_r &= ~(u32)(0x7040);
 	ep_r |=  (u32)(1 << 15); // Keep VTRX (1 has no effect)
-	if (len == 0)
-		ep_r &= ~(u32)(1 << 7); // Clear VTTX
-	ep_r ^= (1 << 4); // STATTX0
-	ep_r ^= (1 << 5); // STATTX1 : Valid
+	ep_r &= ~(u32)(1 << 7);  // Clear VTTX
+	ep_r ^=  (u32)(3 << 4);  // STATTX : Valid
 	reg_wr(USB_CHEPxR(ep), ep_r);
 }
-
 
 /**
  * @brief Configure an endpoint for communication
@@ -197,6 +202,8 @@ void usb_ep_configure(u8 ep, u8 type, usb_ep_def *def)
 		return;
 
 	ep_def = &ep_defs[ep - 1];
+
+	ep_def->release = def->release;
 
 	pma += (ep << 3);
 	/* Configure TX descriptor for selected endpoint */
@@ -238,6 +245,62 @@ void usb_ep_configure(u8 ep, u8 type, usb_ep_def *def)
 	uart_puthex(*(u32*)(pma + 4), 32);
 	uart_puts("\r\n");
 #endif
+}
+
+/**
+ * @brief Modify (force) the endpoint state
+ *
+ * This function modify the state of an endpoint for one direction. The new
+ * state can be any of the four supported by USB controller (disabled, stall,
+ * nak or valid).
+ *
+ * @param ep    Endpoint number (1 -> 7) and direction (0x80)
+ * @param state New state for the endpoint (1=stall, 2=nacked, 3=valid)
+ */
+void usb_ep_set_state(u8 ep, u8 state)
+{
+	u32 prev_state;
+	u32 ep_r;
+	u8  dir;
+
+	/* Extract directio bit */
+	dir = (ep & 0x80);
+	/* Keep only endpoint number */
+	ep  = (ep & 0x7F);
+
+	// Sanity check
+	if (ep > 7)
+		return;
+
+	state = (state & 3);
+
+	ep_r = reg_rd(USB_CHEPxR(ep));
+	ep_r |= (u32)(0x8080);  // Keep VTxX (1 has no effect)
+	/* Modify the state of TX (IN) direction */
+	if (dir)
+	{
+		/* Get previous state */
+		prev_state = ((ep_r >> 4) & 3);
+		/* If previous state was STALL, preserve bits but clear DTOG */
+		if (prev_state == USB_EP_STALL)
+			ep_r &= ~(u32)(0x7000); // Preserve bits
+		else
+			ep_r &= ~(u32)(0x7040); // Preserve bits
+		ep_r ^=  (u32)(state << 4); // STATTX
+	}
+	/* Enabling a RX (OUT) is done by updating state from NAK to VALID */
+	else
+	{
+		/* Get previous state */
+		prev_state = ((ep_r >> 12) & 3);
+		/* If previous state was STALL, preserve bits but clear DTOG */
+		if (prev_state == USB_EP_STALL)
+			ep_r &= ~(u32)(0x0070); // Preserve bits
+		else
+			ep_r &= ~(u32)(0x4070); // Preserve bits
+		ep_r ^=  (u32)(state << 12); // STATRX
+	}
+	reg_wr(USB_CHEPxR(ep), ep_r);
 }
 
 /**
@@ -321,11 +384,12 @@ static inline void ep_rx(unsigned char ep)
 	u8 *data;
 	u32 ep_r;
 	u32 len;
+	int result;
 
 	/* Compute address of EP descriptor entry into table */
 	pma_addr = ((u32)USB_RAM + (ep << 3) + 4);
 	/* Read endpoint RX descriptor */
-	ep_r = *(u32 *)pma_addr;
+	ep_r = *(volatile u32 *)pma_addr;
 	/* Extract received packet parameters */
 	len  = ((ep_r >> 16) & 0x3FF);
 	data = (u8 *)((u32)USB_RAM + (ep_r & 0xFFFF));
@@ -342,16 +406,21 @@ static inline void ep_rx(unsigned char ep)
 	uart_puts("\r\n");
 #endif
 
-	if (ep_defs[ep - 1].rx != 0)
-		ep_defs[ep - 1].rx(data, len);
+	result = 1;
 
-	*(u32*)pma_addr = ep_r & ~(u32)(0x3FF << 16);
+	if (ep_defs[ep - 1].rx != 0)
+		result = ep_defs[ep - 1].rx(data, len);
+
+	*(volatile u32*)pma_addr = ep_r & ~(u32)(0x3FF << 16);
 
 	ep_r = reg_rd(USB_CHEPxR(ep));
 	ep_r &= ~(u32)(0x4070);  // Keep bits
 	ep_r |=  (u32)(1 << 7);  // Keep VTTX (if set)
 	ep_r &= ~(u32)(1 << 15); // Clear VTRX
-	ep_r ^=  (u32)(3 << 12); // STATRX0 : Valid
+	if (result)
+		ep_r ^=  (u32)(3 << 12); // STATRX : Valid
+	else
+		ep_r ^=  (u32)(2 << 12); // STATRX : NAK
 	reg_wr(USB_CHEPxR(ep), ep_r);
 }
 
@@ -363,15 +432,33 @@ static inline void ep_rx(unsigned char ep)
 static inline void ep_tx(unsigned char ep)
 {
 	u32 pma_addr;
-	u32 ep_r;
+	u32 ep_r, ep_d;
+	int result = 0;
 
 	/* Compute address of EP descriptor entry into table */
 	pma_addr = ((u32)USB_RAM + (ep << 3) + 0);
 	/* Read endpoint TX descriptor */
-	ep_r = *(u32 *)pma_addr;
+	ep_d = *(volatile u32 *)pma_addr;
+
+#ifdef USB_INFO
+	uart_puts("USB EP_TX ");
+	uart_puthex(ep, 8);
+	uart_puts(" ep_desc=");
+	uart_puthex(ep_d, 32);
+	uart_puts(" callback ");
+	uart_puthex((u32)ep_defs[ep - 1].tx_complete, 32);
+	uart_puts("\r\n");
+#endif
+
+	/* Acknowledge the received buffer (clear VTTX) */
+	ep_r = reg_rd(USB_CHEPxR(ep));
+	ep_r &= ~(u32)(0x7070);
+	ep_r |=  (u32)(1 << 15); // Keep VTRX (write 1 has no effect)
+	ep_r &= ~(u32)(1 << 7);  // Clear VTTX
+	reg_wr(USB_CHEPxR(ep), ep_r);
 
 	if (ep_defs[ep - 1].tx_complete != 0)
-		ep_defs[ep - 1].tx_complete();
+		result = ep_defs[ep - 1].tx_complete();
 #ifdef USB_INFO
 	else
 	{
@@ -380,14 +467,11 @@ static inline void ep_tx(unsigned char ep)
 		uart_puts(" transmit complete\r\n");
 	}
 #endif
-	/* Clear endpoint data length */
-	*(u32*)pma_addr = ep_r & ~(u32)(0x3FF << 16);
-
-	ep_r = reg_rd(USB_CHEPxR(ep));
-	ep_r &= ~(u32)(0x7070);
-	ep_r |=  (u32)(1 << 15);
-	ep_r &= ~(u32)(1 << 7);
-	reg_wr(USB_CHEPxR(ep), ep_r);
+	if (result == 0)
+	{
+		/* Clear endpoint data length */
+		*(volatile u32*)pma_addr = ep_d & ~(u32)(0x3FF << 16);
+	}
 }
 
 /**
@@ -456,9 +540,30 @@ static inline void ep0_feature_clear(usb_ctrl_request *req)
 	{
 		// TODO: Handle TEST_MODE
 	}
+	/* Handle ENDPOINT_HALT */
 	else if ((rcpt == 2) && (req->wValue == 0))
 	{
-		// TODO: Handle ENDPOINT_HALT
+		usb_ep_def *ep_def;
+		int result;
+		u8  ep, dir;
+
+		/* Extract endpoint id */
+		ep  = (u8)(req->wIndex & 0x7F);
+		dir = (u8)(req->wIndex & 0x80);
+		if (ep <= 7)
+		{
+			result = 0;
+			/* Get access to the EP config */
+			ep_def = &ep_defs[ep - 1];
+			/* If a feature callback is available, call it */
+			if (ep_def->release != 0)
+				result = ep_def->release(dir | ep);
+			/* If there is no new error, re-enable endpoint */
+			if (result == 0)
+				usb_ep_set_state(dir | ep, USB_EP_VALID);
+			else if (result == 1)
+				usb_ep_set_state(dir | ep, USB_EP_NAK);
+		}
 	}
 	else
 		goto err;
@@ -1121,6 +1226,18 @@ void USB_Handler(void)
 			}
 		}
 		isr_ack = (1 << 15);
+	}
+	/* ERR */
+	else if (v & (1 << 13))
+	{
+		uart_puts("USB: Error IT\r\n");
+		isr_ack = (1 << 13);
+	}
+	/* PMA overrun or underrun */
+	else if (v & (1 << 14))
+	{
+		uart_puts("USB: PMA error IT\r\n");
+		isr_ack = (1 << 14);
 	}
 	reg_wr(USB_ISTR, ~isr_ack);
 }

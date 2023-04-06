@@ -34,8 +34,9 @@ static usb_if_drv bulk_if;
 void usb_bulk_init(void)
 {
 	/* Configure and register interface */
-	bulk_if.reset  = if_reset;
-	bulk_if.enable = if_enable;
+	bulk_if.periodic = 0;
+	bulk_if.reset    = if_reset;
+	bulk_if.enable   = if_enable;
 	bulk_if.ctrl_req = if_ctrl;
 	usb_if_register(0, &bulk_if);
 
@@ -183,10 +184,12 @@ static void if_enable(int cfg_id)
 	(void)cfg_id;
 
 	/* Configure RX endpoint */
+	ep_def.release = 0;
 	ep_def.rx = usb_bulk_rx;
 	ep_def.tx_complete = 0;
 	usb_ep_configure(2, USB_EP_BULK, &ep_def);
 	/* Configure TX endpoint */
+	ep_def.release = 0;
 	ep_def.rx = 0;
 	ep_def.tx_complete = usb_bulk_tx;
 	usb_ep_configure(1, USB_EP_BULK, &ep_def);
