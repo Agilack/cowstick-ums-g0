@@ -13,13 +13,14 @@
  * program, see LICENSE.md file for more details.
  * This program is distributed WITHOUT ANY WARRANTY.
  */
+#include "libc.h"
 #include "scsi.h"
 #include "types.h"
 #include "uart.h"
 #include "usb.h"
 #include "usb_msc.h"
 
-static void msc_periodic(void);
+static void _periodic(void);
 static int  usb_if_ctrl(usb_ctrl_request *req, uint len, u8 *data);
 static void usb_if_enable(int cfg_id);
 static void usb_if_reset(void);
@@ -29,8 +30,9 @@ static int usb_ep_tx(void);
 
 static usb_if_drv msc_if;
 
-static vu32    cbw_state;
-static msc_cbw cbw;
+static vu32    fsm_state, data_more;
+static vu32    rx_flag, tx_flag, err_flag;
+static msc_cbw cbw __attribute__((aligned(4)));
 static msc_csw csw;
 
 static uint data_len, data_offset;
@@ -42,11 +44,15 @@ static uint data_len, data_offset;
  */
 void usb_msc_init(void)
 {
-	cbw_state = 0;
+	fsm_state   = MSC_ST_CBW;
+	data_more   = 0;
 	data_offset = 0;
+	rx_flag     = 0;
+	tx_flag     = 0;
+	err_flag    = 0;
 
 	/* Configure and register USB interface */
-	msc_if.periodic = msc_periodic;
+	msc_if.periodic = _periodic;
 	msc_if.reset    = usb_if_reset;
 	msc_if.enable   = usb_if_enable;
 	msc_if.ctrl_req = usb_if_ctrl;
@@ -61,6 +67,50 @@ void usb_msc_init(void)
 /* --                          Private  functions                          -- */
 /* --                                                                      -- */
 /* -------------------------------------------------------------------------- */
+
+static inline void fsm_cbw(void);
+static inline void fsm_csw(void);
+static inline void fsm_data_in(void);
+static inline void fsm_data_out(void);
+static inline void fsm_error(void);
+
+/**
+ * @brief Process periodically MSC state machine
+ *
+ * This function is registered into USB core as periodic handler for the MSC
+ * interface. When bus is active (enumeration complete, interface enabled) USB
+ * will call this function periodically. MSC use a state machine to process
+ * requests : wait CBW, data phase, send CSW.
+ */
+static void _periodic(void)
+{
+	/* Dispatch to functions dedicated to each state */
+	switch(fsm_state)
+	{
+		case MSC_ST_CBW:
+			fsm_cbw();
+			break;
+
+		case MSC_ST_DATA_IN:
+			fsm_data_in();
+			break;
+
+		case MSC_ST_DATA_OUT:
+			fsm_data_out();
+			break;
+
+		case MSC_ST_CSW:
+			fsm_csw();
+			break;
+
+		case MSC_ST_ERROR:
+			fsm_error();
+			break;
+
+		default:
+			fsm_state = MSC_ST_CBW;
+	}
+}
 
 /**
  * @brief Dump content of a received CBW
@@ -89,103 +139,334 @@ static void cbw_dump(void)
 	uart_puts("\r\n");
 }
 
-static void msc_periodic(void)
+/**
+ * @brief MSC state machine: Wait for a CBW packet to start a new transaction
+ *
+ * This is the first step of a MSC transaction. The function first wait for a
+ * new packet from host then try to decode the CBW inside and call SCSI layer.
+ */
+static inline void fsm_cbw(void)
 {
-	if (cbw_state == 0)
+	int result;
+
+	/* Nothing received -> nothing to do :) */
+	if (rx_flag == 0)
 		return;
+	rx_flag = 0;
 
-	if (cbw_state == 1)
+#ifdef MSC_DEBUG_CBW
+	uart_puts("USB_MSC: [");
+	uart_color(4);
+	uart_puthex(cbw.tag, 32);
+	uart_color(0);
+	uart_puts("] Receive CBW\r\n");
+#endif
+
+	/* Clear response structure */
+	memset(&csw, 0, sizeof(msc_csw));
+
+	result = scsi_command(cbw.cb, cbw.cb_len);
+	switch(result)
 	{
-		cbw_state = 2;
-		uart_puts("USB_MSC: Receive CBW ");
-		uart_color(4);
-		uart_puthex(cbw.tag, 32);
-		uart_color(0);
-		uart_puts("\r\n");
+		/* Success and response available */
+		case 0:
+			fsm_state = MSC_ST_CSW;
+			break;
 
-		switch(scsi_command(cbw.cb, cbw.cb_len))
+		/* Success and IN data phase needed */
+		case 1:
+		case 2:
 		{
-			/* Success and response available */
-			case 0:
-				cbw_state = 3;
-				break;
-			/* Success and IN data phase needed */
-			case 1:
+			u8  *data;
+			data_offset = 0;
+			data = scsi_get_response(&data_len);
+			if (data)
 			{
-				u8  *data;
-				data_offset = 0;
-				data = scsi_get_response(&data_len);
-				if (data)
+				fsm_state = MSC_ST_DATA_IN;
+				if (result == 1)
+					data_more = 0;
+				else
+					data_more = 1;
+
+				if (data_len > 64)
 				{
-					if (data_len > 64)
-					{
-						data_offset = 64;
-						usb_send(1, data, 64);
-					}
-					else
-					{
-						data_offset = data_len;
-						usb_send(1, data, data_len);
-					}
+					data_offset = 64;
+					usb_send(1, data, 64);
 				}
-				break;
+				else
+				{
+					data_offset = data_len;
+					usb_send(1, data, data_len);
+				}
 			}
-			case -1:
-			case -2:
-				cbw_dump();
-				// STALL ?
-				cbw_state = 8;
-				usb_ep_set_state(0x80 | 1, USB_EP_STALL);
-				break;
+			else
+			{
+				uart_puts("USB_MSC: SCSI error, Data IN but no data\r\n");
+				goto err;
+			}
+			break;
 		}
+
+		/* Success and OUT data phase needed */
+		case 3:
+		case 4:
+		{
+			data_len    = 0;
+			data_offset = 0;
+			/* Get expected data length */
+			scsi_set_data(0, &data_len);
+
+			fsm_state = MSC_ST_DATA_OUT;
+			rx_flag = 0;
+			usb_ep_set_state(2, USB_EP_VALID);
+			break;
+		}
+
+		/* Error into SCSI layer, reject this request */
+		case -1:
+		case -2:
+			/* First, dump the content of this request (debug) */
+			cbw_dump();
+			goto err;
+			break;
 	}
-	else if (cbw_state == 3)
+	return;
+
+err:
+	/* If the host does not ask for data phase, transition to CSW */
+	if (cbw.data_length == 0)
 	{
-		uart_puts("USB_MSC: Data complete, send CSW ");
-		uart_color(4);
-		uart_puthex(cbw.tag, 32);
-		uart_color(0);
-		uart_puts("\r\n");
-		uart_flush();
-		csw.signature = 0x53425355;
-		csw.tag = cbw.tag;
-		csw.residue = 0;
-		csw.status = 0x00;
-		cbw_state = 4;
-		usb_send(1, (u8*)&csw, 13);
-	}
-	else if (cbw_state == 9)
-	{
-		uart_puts("USB_MSC: Data complete (with error), send CSW ");
-		uart_color(4);
-		uart_puthex(cbw.tag, 32);
-		uart_color(0);
-		uart_puts("\r\n");
-		uart_flush();
-		csw.signature = 0x53425355;
-		csw.tag = cbw.tag;
-		csw.residue = 0;
 		csw.status = 0x02;
-		cbw_state = 4;
+		fsm_state = MSC_ST_CSW;
+	}
+	/* Host ask for data, STALL the endpoint to report error */
+	else
+	{
+		fsm_state = MSC_ST_ERROR;
+		if (cbw.flags & 0x80)
+			usb_ep_set_state(0x80 | 1, USB_EP_STALL);
+		else
+			usb_ep_set_state(2, USB_EP_STALL);
+	}
+}
+
+/**
+ * @brief MSC state machine: Send the CSW packet to finish current transaction
+ *
+ * Sending a CSW packet is the last step of an MSC transaction after CBW and
+ * data (see fsm_cbw). This packet report to the host a status code for the
+ * last transaction (success or error) and an optional length of remaining
+ * data (residue). When this packet is sent, the state machine go back to his
+ * initial state (CBW) and a new transaction can be started.
+ */
+static inline void fsm_csw(void)
+{
+	/* If CSW packet has not already been sent */
+	if (csw.signature == 0)
+	{
+#ifdef MSC_DEBUG_CSW
+		uart_puts("USB_MSC: [");
+		uart_color(4);
+		uart_puthex(cbw.tag, 32);
+		uart_color(0);
+		uart_puts("] Complete (");
+		if (csw.status == 0)
+		{
+			uart_color(2);
+			uart_puts("success");
+		}
+		else
+		{
+			uart_color(1);
+			uart_puts("error ");
+			uart_puthex(csw.status, 8);
+		}
+		uart_color(0);
+		uart_puts("), send CSW \r\n");
+		uart_flush();
+#endif
+		/* Inform SCSI layer that current transaction is complete */
+		scsi_complete();
+		/* Prepare and send CSW packet */
+		csw.signature = 0x53425355;
+		csw.tag = cbw.tag;
+		csw.residue = 0;
 		usb_send(1, (u8*)&csw, 13);
 	}
-	else if (cbw_state == 5)
+
+	/* When CSW has been transmited, wait TX complete */
+	if (tx_flag == 1)
 	{
-		cbw_state = 0;
+		tx_flag  = 0;
+		rx_flag  = 0;
+		err_flag = 0;
+		fsm_state = MSC_ST_CBW;
+		/* Re-activate OUT endpoint to receive next request */
 		usb_ep_set_state(2, USB_EP_VALID);
 	}
 }
 
+/**
+ * @brief MSC state machine: Data phase device-to-host (IN transaction)
+ *
+ * This function manage a data phase transfer for the direction device to host
+ * (IN). The length of the payload transmited during data phase can have more
+ * or less any length. As USB endpoint buffers are small (~64B in HS) the
+ * payload is split into intermediate buffers of 512 bytes by SCSI and sent
+ * with multiple chunks of 64 bytes.
+ */
+static void fsm_data_in(void)
+{
+	int result;
+
+	if (tx_flag == 0)
+		return;
+	tx_flag = 0;
+
+	/* If there is no more data to send, transition to CSW */
+	if (data_more == 0)
+	{
+		fsm_state = MSC_ST_CSW;
+		return;
+	}
+
+	result = scsi_command(cbw.cb, cbw.cb_len);
+	switch(result)
+	{
+		/* Success and no more data to send */
+		case 0:
+			fsm_state = MSC_ST_CSW;
+			break;
+		/* Success and IN data phase needed */
+		case 1:
+		case 2:
+		{
+			u8  *data;
+			data_offset = 0;
+			data = scsi_get_response(&data_len);
+			if (data)
+			{
+				if (result == 1)
+					data_more = 0;
+				else
+					data_more = 1;
+
+				if (data_len > 64)
+				{
+					data_offset = 64;
+					usb_send(1, data, 64);
+				}
+				else
+				{
+					data_offset = data_len;
+					usb_send(1, data, data_len);
+				}
+			}
+			else
+			{
+				uart_puts("USB_MSC: SCSI error, Data IN early ends\r\n");
+				goto err;
+			}
+			break;
+		}
+		default:
+			uart_puts("USB_MSC: Unknown SCSI result during Data IN\r\n");
+			goto err;
+	}
+	return;
+
+err:
+	fsm_state = MSC_ST_ERROR;
+	usb_ep_set_state(0x80 | 1, USB_EP_STALL);
+}
+
+/**
+ * @brief MSC state machine: Data phase host-to-device (OUT transaction)
+ *
+ * This function manage a data phase transfer for the direction host to device
+ * (OUT). The length of the payload transmited during data phase can have more
+ * or less any length. As USB endpoint buffers are small (~64B in HS) the
+ * payload is split into intermediate buffers of 512 bytes by SCSI and sent
+ * with multiple chunks of 64 bytes.
+ */
+static void fsm_data_out(void)
+{
+	int result;
+
+	if (rx_flag == 0)
+		return;
+	rx_flag = 0;
+
+	uart_puts("USB_MSC: DATA_OUT\r\n");
+
+	result = scsi_command(cbw.cb, cbw.cb_len);
+	switch(result)
+	{
+		/* Success and no more data to send */
+		case 0:
+			fsm_state = MSC_ST_CSW;
+			break;
+		/* Success and OUT data phase needed */
+		case 3:
+		{
+			data_len    = 0;
+			data_offset = 0;
+			/* Get expected data length */
+			scsi_set_data(0, &data_len);
+
+			fsm_state = MSC_ST_DATA_OUT;
+			rx_flag = 0;
+			usb_ep_set_state(2, USB_EP_VALID);
+			break;
+		}
+	}
+}
+
+/**
+ * @brief MSC state machine: Report and clear an error
+ *
+ * This state is used when something wrong has been detected during data
+ * transfer. The endpoint is first marked as STALL to report error (depends
+ * on direction), then a CSW packet is sent to finish transaction.
+ */
+static inline void fsm_error(void)
+{
+	if (err_flag == 0)
+		return;
+	/* Clear error flag */
+	err_flag = 0;
+	/* If CSW status has not already been set, set as error */
+	if (csw.status == 0)
+		csw.status = 0x02;
+
+	fsm_state = MSC_ST_CSW;
+}
+
+/**
+ * @brief Endpoint is released after a STALL event
+ *
+ * This function is registered as callback for the release event of both MSC
+ * endpoints.
+ *
+ * @param ep Endpoint id (1 -> 7)
+ * @return integer State of the endpoint after release (0=Valid, 1=NAK)
+ */
 static int usb_ep_release(const u8 ep)
 {
+#ifdef MSC_DEBUG_USB
 	uart_puts("USB_MSC: Release endpoint ");
 	uart_putdec(ep);
 	uart_puts(" ");
-	uart_putdec(cbw_state);
+	uart_putdec(fsm_state);
 	uart_puts("\r\n");
-	if (cbw_state == 8)
-		cbw_state = 9;
-	return(0);
+	uart_flush();
+#else
+	(void)ep;
+#endif
+	if (fsm_state == MSC_ST_ERROR)
+		err_flag = 1;
+
+	return(1);
 }
 
 /**
@@ -201,28 +482,57 @@ static int usb_ep_release(const u8 ep)
 static int usb_ep_rx(u8 *data, uint len)
 {
 	u8  *dout;
-	uint i;
+	uint avail, i;
 
-#ifdef MSC_DEBUG_RX
+#ifdef MSC_DEBUG_USB
 	uart_puts("USB_MSC: Receive ");
 	uart_putdec(len);
 	uart_puts(" bytes\r\n");
 #endif
 
-	if (len > sizeof(msc_cbw))
+	if (fsm_state == MSC_ST_DATA_OUT)
 	{
-		uart_puts("USB_MSC: Receive too large packet\r\n");
-		len = sizeof(msc_cbw);
+		/* First, get available space */
+		avail = 0;
+		dout = scsi_set_data(0, &avail);
+		/**/
+		uart_puts("USB_MSC: Receive ");
+		uart_putdec(len);
+		uart_puts(" bytes, ");
+		uart_putdec(avail);
+		uart_puts(" available\r\n");
+		if (avail < len)
+			len = avail;
+		for (i = 0; i < len; i += 4)
+		{
+			*(vu32 *)dout = *(vu32 *)data;
+			data += 4;
+			dout += 4;
+		}
+		scsi_set_data(0, &i);
+		data_offset += len;
+		if (data_offset >= data_len)
+			rx_flag = 1;
+		else
+			return(1);
 	}
+	else
+	{
+		if (len > sizeof(msc_cbw))
+		{
+			uart_puts("USB_MSC: Receive too large packet\r\n");
+			len = sizeof(msc_cbw);
+		}
 
-	dout = (u8 *)&cbw;
-	for (i = 0; i < len; i += 4)
-	{
-		*(vu32 *)dout = *(vu32 *)data;
-		data += 4;
-		dout += 4;
+		dout = (u8 *)&cbw;
+		for (i = 0; i < len; i += 4)
+		{
+			*(vu32 *)dout = *(vu32 *)data;
+			data += 4;
+			dout += 4;
+		}
+		rx_flag = 1;
 	}
-	cbw_state = 1;
 
 	return(0);
 }
@@ -241,10 +551,10 @@ static int usb_ep_tx(void)
 	uint remains;
 	u8   *data;
 
-	if (cbw_state == 2)
+	if (fsm_state == MSC_ST_DATA_IN)
 	{
 		if (data_offset == data_len)
-			cbw_state = 3;
+			tx_flag = 1;
 		else
 		{
 			remains = (data_len - data_offset);
@@ -262,10 +572,8 @@ static int usb_ep_tx(void)
 			return(1);
 		}
 	}
-	else if (cbw_state == 4)
-		cbw_state = 5;
-	else if (cbw_state == 8)
-		uart_puts("MSC_TX_8\r\n");
+	else if (fsm_state == MSC_ST_CSW)
+		tx_flag = 1;
 
 	return(0);
 }
@@ -290,7 +598,7 @@ static int usb_if_ctrl(usb_ctrl_request *req, uint len, u8 *data)
 		usb_send(0, (u8*)&value, 1);
 		uart_puts("USB_MSC: GetMaxLUN = 0 (1 LUN)\r\n");
 	}
-#ifdef MSC_DEBUG
+#ifdef MSC_DEBUG_USB
 	else
 	{
 		uart_puts("USB_MSC: Control request (len=");
@@ -325,13 +633,13 @@ static void usb_if_enable(int cfg_id)
 	(void)cfg_id;
 
 	/* Configure RX endpoint */
-	ep_def.release = 0;
-	ep_def.rx = usb_ep_rx;
+	ep_def.release = usb_ep_release;
+	ep_def.rx      = usb_ep_rx;
 	ep_def.tx_complete = 0;
 	usb_ep_configure(2, USB_EP_BULK, &ep_def);
 	/* Configure TX endpoint */
 	ep_def.release = usb_ep_release;
-	ep_def.rx = 0;
+	ep_def.rx      = 0;
 	ep_def.tx_complete = usb_ep_tx;
 	usb_ep_configure(1, USB_EP_BULK, &ep_def);
 

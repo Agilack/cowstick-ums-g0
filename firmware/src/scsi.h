@@ -22,6 +22,7 @@
 #define SCSI_CMD6_MODE_SENSE 0x1A
 #define SCSI_CMD10_READ_CAPACITY 0x25
 #define SCSI_CMD10_READ          0x28
+#define SCSI_CMD10_WRITE         0x2A
 
 typedef struct
 {
@@ -33,7 +34,9 @@ typedef struct
 
 void scsi_init(void);
 int  scsi_command(u8 *cb, uint len);
+void scsi_complete(void);
 u8  *scsi_get_response(uint *len);
+u8  *scsi_set_data(u8 *data, uint *len);
 
 #endif
 /* EOF */

@@ -21,8 +21,9 @@
 static inline int cmd6(u8 *cb, uint len);
 static inline int cmd10(u8 *cb, uint len);
 
-static u8   scsi_data[512];
+static u8   scsi_data[512], scsi_storage[512];
 static uint scsi_len;
+static u32  scsi_ctx;
 
 /**
  * @brief Initialize SCSI disk driver
@@ -30,7 +31,17 @@ static uint scsi_len;
  */
 void scsi_init(void)
 {
+	scsi_ctx = 0;
 	uart_puts("SCSI: Initialized\r\n");
+
+#ifdef SCSI_DEBUG_STORAGE
+	if (1)
+	{
+		int i;
+		for (i = 0; i < 512; i++)
+			scsi_storage[i] = (i & 0xFF);
+	}
+#endif
 }
 
 int scsi_command(u8 *cb, uint len)
@@ -76,8 +87,13 @@ int scsi_command(u8 *cb, uint len)
 	return(result);
 }
 
+void scsi_complete(void)
+{
+	scsi_ctx = 0;
+}
+
 const u8 inq[36] = {
-	0x00, 0x00, 0x03, 0x02, 32, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x02, 0x02, 32, 0x00, 0x00, 0x00,
 	/* T10 Vendor identification */
 	'A','G','I','L','A','C','K', ' ',
 	/* Product identification */
@@ -93,6 +109,23 @@ u8 *scsi_get_response(uint *len)
 		*len = scsi_len;
 
 	return(scsi_data);
+}
+
+u8 *scsi_set_data(u8 *data, uint *len)
+{
+	u8 *d;
+
+	if (data)
+	{
+	}
+	if (len)
+	{
+		if (*len > 0)
+			scsi_len += *len;
+		*len = 512 - scsi_len;
+	}
+	d = scsi_data + scsi_len;
+	return(d);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -136,7 +169,7 @@ static inline int cmd6_inquiry(u8 *cb, uint len)
 	(void)cb;
 	(void)len;
 
-	uart_color(2);
+	uart_color(3);
 	uart_puts("SCSI: Inquiry\r\n");
 	uart_color(0);
 
@@ -148,7 +181,7 @@ static inline int cmd6_inquiry(u8 *cb, uint len)
 
 static int cmd6_mode_sense(void)
 {
-	uart_color(2);
+	uart_color(3);
 	uart_puts("SCSI: Mode Sense\r\n");
 	uart_color(0);
 	scsi_data[0] = 0x03;
@@ -161,7 +194,7 @@ static int cmd6_mode_sense(void)
 
 static int cmd6_test_ready(u8 *cb, uint len)
 {
-	uart_color(2);
+	uart_color(3);
 	uart_puts("SCSI: Test Unit Ready\r\n");
 	uart_color(0);
 
@@ -177,6 +210,7 @@ static int cmd6_test_ready(u8 *cb, uint len)
 
 static int cmd10_read(u8 *cb, uint len);
 static int cmd10_read_capacity(void);
+static int cmd10_write(u8 *cb, uint len);
 
 static inline int cmd10(u8 *cb, uint len)
 {
@@ -189,11 +223,64 @@ static inline int cmd10(u8 *cb, uint len)
 			return( cmd10_read_capacity() );
 		case SCSI_CMD10_READ:
 			return( cmd10_read(cb, len) );
+		case SCSI_CMD10_WRITE:
+			return( cmd10_write(cb, len) );
 	}
 	return(-1);
 }
 
 static int cmd10_read(u8 *cb, uint len)
+{
+	u32 lba;
+	u16 transfer_length;
+
+	(void)len;
+
+	lba = (cb[2] << 24) | (cb[3] << 16) | (cb[4] << 8) | cb[5];
+	transfer_length = (cb[7] << 8);
+	transfer_length |= (u16)cb[8];
+
+	if (scsi_ctx == 0)
+	{
+		uart_color(3);
+		uart_puts("SCSI: Read block ");
+		uart_puthex(lba, 32);
+		uart_puts(" count=");
+		uart_putdec(transfer_length);
+		uart_puts(" current=");
+		uart_putdec(scsi_ctx);
+		uart_puts("\r\n");
+		uart_color(0);
+		//uart_flush();
+	}
+
+	memcpy(scsi_data, scsi_storage, 512);
+	scsi_len = 512;
+
+	scsi_ctx++;
+	if (scsi_ctx < transfer_length)
+		return(2);
+	return(1);
+}
+
+static int cmd10_read_capacity(void)
+{
+	u8 lba[4] = {0x00, 0x00, 0x10, 0x00};
+	u8 block_length[4] = {0x00, 0x00, 0x02, 0x00};
+
+	uart_color(3);
+	uart_puts("SCSI: Read Capacity\r\n");
+	uart_color(0);
+	//uart_flush();
+
+	memcpy(&scsi_data[0], lba, 4);
+	memcpy(&scsi_data[4], block_length, 4);
+	scsi_len = 8;
+
+	return(1);
+}
+
+static int cmd10_write(u8 *cb, uint len)
 {
 	u32 lba;
 	u16 transfer_length;
@@ -205,37 +292,39 @@ static int cmd10_read(u8 *cb, uint len)
 	transfer_length = (cb[7] << 8);
 	transfer_length |= (u16)cb[8];
 
-	uart_color(2);
-	uart_puts("SCSI: Read block ");
+	uart_color(3);
+	uart_puts("SCSI: Write block ");
 	uart_puthex(lba, 32);
 	uart_puts(" count=");
 	uart_putdec(transfer_length);
+	uart_puts(" current=");
+	uart_putdec(scsi_ctx);
 	uart_puts("\r\n");
 	uart_color(0);
-	uart_flush();
+	//uart_flush();
 
-	//memset(scsi_data, 0, 512);
-	for (i = 0; i < 512; i++)
-		scsi_data[i] = (i & 0xFF);
-	scsi_len = 512;
+	if (scsi_ctx > 0)
+	{
+		memcpy(scsi_storage, scsi_data, 512);
+		for (i = 0; i < 512; i++)
+		{
+			uart_puthex(scsi_data[i], 8);
+			if ((i % 16) == 15)
+			{
+				uart_puts("\r\n");
+				uart_flush();
+			}
+			else
+				uart_putc(' ');
+		}
+		uart_puts("\r\n");
+	}
+	scsi_len = 0;
 
-	return(1);
+	scsi_ctx++;
+	if (scsi_ctx <= transfer_length)
+		return(3);
+	return(0);
 }
 
-static int cmd10_read_capacity(void)
-{
-	u8 lba[4] = {0x00, 0x00, 0x10, 0x00};
-	u8 block_length[4] = {0x00, 0x00, 0x02, 0x00};
-
-	uart_color(2);
-	uart_puts("SCSI: Read Capacity\r\n");
-	uart_color(0);
-	uart_flush();
-
-	memcpy(&scsi_data[0], lba, 4);
-	memcpy(&scsi_data[4], block_length, 4);
-	scsi_len = 8;
-
-	return(1);
-}
 /* EOF */

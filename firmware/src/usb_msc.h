@@ -17,6 +17,12 @@
 #define USB_MSC_H
 #include "types.h"
 
+#define MSC_ST_CBW      1
+#define MSC_ST_DATA_IN  2
+#define MSC_ST_DATA_OUT 3
+#define MSC_ST_CSW      4
+#define MSC_ST_ERROR    5
+
 typedef struct  __attribute__((packed))
 {
 	u32 signature;
