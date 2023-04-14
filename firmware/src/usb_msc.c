@@ -159,7 +159,9 @@ static inline void fsm_cbw(void)
 	uart_color(4);
 	uart_puthex(cbw.tag, 32);
 	uart_color(0);
-	uart_puts("] Receive CBW\r\n");
+	uart_puts("] Receive CBW data_len=");
+	uart_putdec(cbw.data_length);
+	uart_puts("\r\n");
 #endif
 
 	/* Clear response structure */
@@ -179,6 +181,8 @@ static inline void fsm_cbw(void)
 		{
 			u8  *data;
 			data_offset = 0;
+			csw.residue = cbw.data_length;
+
 			data = scsi_get_response(&data_len);
 			if (data)
 			{
@@ -236,12 +240,14 @@ err:
 	/* If the host does not ask for data phase, transition to CSW */
 	if (cbw.data_length == 0)
 	{
-		csw.status = 0x02;
+		csw.status = 0x01;
 		fsm_state = MSC_ST_CSW;
 	}
 	/* Host ask for data, STALL the endpoint to report error */
 	else
 	{
+		csw.status = 0x01;
+		csw.residue = cbw.data_length;
 		fsm_state = MSC_ST_ERROR;
 		if (cbw.flags & 0x80)
 			usb_ep_set_state(0x80 | 1, USB_EP_STALL);
@@ -282,7 +288,9 @@ static inline void fsm_csw(void)
 			uart_puthex(csw.status, 8);
 		}
 		uart_color(0);
-		uart_puts("), send CSW \r\n");
+		uart_puts("), send CSW residue=");
+		uart_putdec(csw.residue);
+		uart_puts("\r\n");
 		uart_flush();
 #endif
 		/* Inform SCSI layer that current transaction is complete */
@@ -290,7 +298,6 @@ static inline void fsm_csw(void)
 		/* Prepare and send CSW packet */
 		csw.signature = 0x53425355;
 		csw.tag = cbw.tag;
-		csw.residue = 0;
 		usb_send(1, (u8*)&csw, 13);
 	}
 
@@ -322,6 +329,15 @@ static void fsm_data_in(void)
 	if (tx_flag == 0)
 		return;
 	tx_flag = 0;
+
+	/* Update residue with length of data sent */
+	if (csw.residue >= data_offset)
+		csw.residue -= data_offset;
+	else
+	{
+		// TODO Handle this error !!!!
+		csw.residue = 0;
+	}
 
 	/* If there is no more data to send, transition to CSW */
 	if (data_more == 0)
@@ -397,8 +413,9 @@ static void fsm_data_out(void)
 		return;
 	rx_flag = 0;
 
+#ifdef MSC_DEBUG_USB
 	uart_puts("USB_MSC: DATA_OUT\r\n");
-
+#endif
 	result = scsi_command(cbw.cb, cbw.cb_len);
 	switch(result)
 	{
@@ -495,12 +512,13 @@ static int usb_ep_rx(u8 *data, uint len)
 		/* First, get available space */
 		avail = 0;
 		dout = scsi_set_data(0, &avail);
-		/**/
+#ifdef MSC_DEBUG_USB
 		uart_puts("USB_MSC: Receive ");
 		uart_putdec(len);
 		uart_puts(" bytes, ");
 		uart_putdec(avail);
 		uart_puts(" available\r\n");
+#endif
 		if (avail < len)
 			len = avail;
 		for (i = 0; i < len; i += 4)
@@ -594,9 +612,17 @@ static int usb_if_ctrl(usb_ctrl_request *req, uint len, u8 *data)
 
 	if ((req->bmRequestType == 0xA1) && (req->bRequest == 0xFE))
 	{
-		value = 0;
+		/* Get the number of registered LUN into SCSI driver */
+		value = scsi_lun_count();
+		/* Value expected is the id of the last lun (count - 1) */
+		if (value > 0)
+			value --;
 		usb_send(0, (u8*)&value, 1);
-		uart_puts("USB_MSC: GetMaxLUN = 0 (1 LUN)\r\n");
+		uart_puts("USB_MSC: GetMaxLUN = ");
+		uart_putdec(value);
+		uart_puts(" (");
+		uart_putdec(value+1);
+		uart_puts(" LUN)\r\n");
 	}
 #ifdef MSC_DEBUG_USB
 	else
