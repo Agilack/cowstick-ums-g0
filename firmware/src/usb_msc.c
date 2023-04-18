@@ -31,7 +31,7 @@ static int usb_ep_tx(void);
 static usb_if_drv msc_if;
 
 static vu32    fsm_state, data_more;
-static vu32    rx_flag, tx_flag, err_flag;
+static vu32    rx_flag, tx_flag, err_flag, rst_flag;
 static msc_cbw cbw __attribute__((aligned(4)));
 static msc_csw csw;
 
@@ -50,6 +50,7 @@ void usb_msc_init(void)
 	rx_flag     = 0;
 	tx_flag     = 0;
 	err_flag    = 0;
+	rst_flag    = 0;
 
 	/* Configure and register USB interface */
 	msc_if.periodic = _periodic;
@@ -84,6 +85,25 @@ static inline void fsm_error(void);
  */
 static void _periodic(void)
 {
+	/* Process device ResetRecovery request */
+	if (rst_flag)
+	{
+		fsm_state   = MSC_ST_CBW;
+		data_more   = 0;
+		data_offset = 0;
+		rx_flag     = 0;
+		tx_flag     = 0;
+		err_flag    = 0;
+		if (rst_flag == 1)
+		{
+			rst_flag = 0;
+			usb_send(0, 0, 0);
+		}
+		else
+			rst_flag = 0;
+		uart_puts("USB_MSC: Reseted\r\n");
+	}
+
 	/* Dispatch to functions dedicated to each state */
 	switch(fsm_state)
 	{
@@ -483,6 +503,9 @@ static int usb_ep_release(const u8 ep)
 	if (fsm_state == MSC_ST_ERROR)
 		err_flag = 1;
 
+	if ((fsm_state == MSC_ST_CBW) && (ep == 2))
+		return(0);
+
 	return(1);
 }
 
@@ -504,7 +527,9 @@ static int usb_ep_rx(u8 *data, uint len)
 #ifdef MSC_DEBUG_USB
 	uart_puts("USB_MSC: Receive ");
 	uart_putdec(len);
-	uart_puts(" bytes\r\n");
+	uart_puts(" bytes (fsm=");
+	uart_putdec(fsm_state);
+	uart_puts(")\r\n");
 #endif
 
 	if (fsm_state == MSC_ST_DATA_OUT)
@@ -610,6 +635,7 @@ static int usb_if_ctrl(usb_ctrl_request *req, uint len, u8 *data)
 	if (data)
 		return(1);
 
+	/* Get Max LUN */
 	if ((req->bmRequestType == 0xA1) && (req->bRequest == 0xFE))
 	{
 		/* Get the number of registered LUN into SCSI driver */
@@ -623,6 +649,16 @@ static int usb_if_ctrl(usb_ctrl_request *req, uint len, u8 *data)
 		uart_puts(" (");
 		uart_putdec(value+1);
 		uart_puts(" LUN)\r\n");
+	}
+	/* Bulk Only class-specific Reset (reset recovery) */
+	else if ((req->bmRequestType == 0x21) && (req->bRequest == 0xFF))
+	{
+		/* To avoid race condition, reset sequence */
+		rst_flag = 1;
+
+		uart_puts("USB_MSC: Class RESET\r\n");
+		uart_flush();
+		return(1);
 	}
 #ifdef MSC_DEBUG_USB
 	else
@@ -686,6 +722,8 @@ static void usb_if_reset(void)
 #ifdef MSC_INFO
 	uart_puts("USB_MSC: Reset\r\n");
 #endif
+	rst_flag = 2;
+
 	scsi_init();
 }
 /* EOF */

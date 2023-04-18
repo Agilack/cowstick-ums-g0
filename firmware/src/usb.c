@@ -282,7 +282,7 @@ void usb_ep_set_state(u8 ep, u8 state)
 		/* Get previous state */
 		prev_state = ((ep_r >> 4) & 3);
 		/* If previous state was STALL, preserve bits but clear DTOG */
-		if (prev_state == USB_EP_STALL)
+		if ((prev_state == USB_EP_STALL) && (ep == 0))
 			ep_r &= ~(u32)(0x7000); // Preserve bits
 		else
 			ep_r &= ~(u32)(0x7040); // Preserve bits
@@ -294,13 +294,14 @@ void usb_ep_set_state(u8 ep, u8 state)
 		/* Get previous state */
 		prev_state = ((ep_r >> 12) & 3);
 		/* If previous state was STALL, preserve bits but clear DTOG */
-		if (prev_state == USB_EP_STALL)
+		if ((prev_state == USB_EP_STALL) && (ep == 0))
 			ep_r &= ~(u32)(0x0070); // Preserve bits
 		else
 			ep_r &= ~(u32)(0x4070); // Preserve bits
 		ep_r ^=  (u32)(state << 12); // STATRX
 	}
-	reg_wr(USB_CHEPxR(ep), ep_r);
+	if (state != prev_state)
+		reg_wr(USB_CHEPxR(ep), ep_r);
 }
 
 /**
