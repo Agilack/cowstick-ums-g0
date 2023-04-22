@@ -192,6 +192,13 @@ static inline void fsm_cbw(void)
 	{
 		/* Success and response available */
 		case 0:
+			/* If host want a data phase (Hi or Ho) */
+			if (cbw.data_length > 0)
+			{
+				csw.status = 0;
+				goto err;
+			}
+
 			fsm_state = MSC_ST_CSW;
 			break;
 
@@ -200,6 +207,29 @@ static inline void fsm_cbw(void)
 		case 2:
 		{
 			u8  *data;
+
+			/* If host does *not* want data phase (Hn) */
+			if (cbw.data_length == 0)
+			{
+				/* It is a phase error ... */
+				csw.status = 0x02;
+				/* and residue is ignored in this case */
+				csw.residue = 0x00;
+				fsm_state = MSC_ST_CSW;
+				break;
+			}
+			/* If host expect to _send_ data (Ho<>Di) */
+			else if ((cbw.flags & 0x80) == 0)
+			{
+				/* It is a phase error ... */
+				csw.status = 0x02;
+				/* residue should be ignored but update it */
+				csw.residue = 0;
+				fsm_state = MSC_ST_ERROR;
+				usb_ep_set_state(2, USB_EP_STALL);
+				break;
+			}
+
 			data_offset = 0;
 			csw.residue = cbw.data_length;
 
@@ -211,6 +241,10 @@ static inline void fsm_cbw(void)
 					data_more = 0;
 				else
 					data_more = 1;
+
+				/* If host request _less_ data than returned by this command */
+				if (data_len > cbw.data_length)
+					data_len = cbw.data_length;
 
 				if (data_len > 64)
 				{
@@ -235,10 +269,37 @@ static inline void fsm_cbw(void)
 		case 3:
 		case 4:
 		{
+			/* If host does *not* want data phase (Hn) */
+			if (cbw.data_length == 0)
+			{
+				/* It is a phase error ... */
+				csw.status = 0x02;
+				/* residue should be ignored but update it */
+				csw.residue = 0;
+				fsm_state = MSC_ST_CSW;
+				break;
+			}
+			/* If host expect to _receive_ data (Hi<>Do) */
+			else if (cbw.flags & 0x80)
+			{
+				/* It is a phase error ... */
+				csw.status = 0x02;
+				/* residue should be ignored but update it */
+				csw.residue = 0;
+				fsm_state = MSC_ST_ERROR;
+				usb_ep_set_state(0x80 | 1, USB_EP_STALL);
+				break;
+			}
+
+			csw.residue = cbw.data_length;
 			data_len    = 0;
 			data_offset = 0;
 			/* Get expected data length */
 			scsi_set_data(0, &data_len);
+
+			/* If host will send _less_ than command expect */
+			if (cbw.data_length < data_len)
+				data_len = cbw.data_length;
 
 			fsm_state = MSC_ST_DATA_OUT;
 			rx_flag = 0;
@@ -260,13 +321,15 @@ err:
 	/* If the host does not ask for data phase, transition to CSW */
 	if (cbw.data_length == 0)
 	{
-		csw.status = 0x01;
+		if (csw.status == 0)
+			csw.status = 0x01;
 		fsm_state = MSC_ST_CSW;
 	}
 	/* Host ask for data, STALL the endpoint to report error */
 	else
 	{
-		csw.status = 0x01;
+		if (csw.status == 0)
+			csw.status = 0x01;
 		csw.residue = cbw.data_length;
 		fsm_state = MSC_ST_ERROR;
 		if (cbw.flags & 0x80)
@@ -287,6 +350,10 @@ err:
  */
 static inline void fsm_csw(void)
 {
+	/* A STALL event was sent, wait for host to clear it */
+	if (err_flag == 2)
+		return;
+
 	/* If CSW packet has not already been sent */
 	if (csw.signature == 0)
 	{
@@ -380,6 +447,9 @@ static void fsm_data_in(void)
 			u8  *data;
 			data_offset = 0;
 			data = scsi_get_response(&data_len);
+			/* If host request _less_ data than returned by this command */
+			if (data_len > csw.residue)
+				data_len = csw.residue;
 			if (data)
 			{
 				if (result == 1)
@@ -433,15 +503,28 @@ static void fsm_data_out(void)
 		return;
 	rx_flag = 0;
 
+	/* Update length of processed data */
+	csw.residue -= data_offset;
+
 #ifdef MSC_DEBUG_USB
-	uart_puts("USB_MSC: DATA_OUT\r\n");
+	uart_puts("USB_MSC: DATA_OUT, ");
+	uart_putdec(csw.residue);
+	uart_puts(" more bytes to receive\r\n");
 #endif
+
 	result = scsi_command(cbw.cb, cbw.cb_len);
 	switch(result)
 	{
 		/* Success and no more data to send */
 		case 0:
-			fsm_state = MSC_ST_CSW;
+			if (csw.residue > 0)
+			{
+				csw.status = 0;
+				fsm_state = MSC_ST_ERROR;
+				usb_ep_set_state(2, USB_EP_STALL);
+			}
+			else
+				fsm_state = MSC_ST_CSW;
 			break;
 		/* Success and OUT data phase needed */
 		case 3:
@@ -450,6 +533,10 @@ static void fsm_data_out(void)
 			data_offset = 0;
 			/* Get expected data length */
 			scsi_set_data(0, &data_len);
+
+			/* If host will send _less_ than command expect */
+			if (csw.residue < data_len)
+				data_len = csw.residue;
 
 			fsm_state = MSC_ST_DATA_OUT;
 			rx_flag = 0;
@@ -472,9 +559,6 @@ static inline void fsm_error(void)
 		return;
 	/* Clear error flag */
 	err_flag = 0;
-	/* If CSW status has not already been set, set as error */
-	if (csw.status == 0)
-		csw.status = 0x02;
 
 	fsm_state = MSC_ST_CSW;
 }
@@ -501,6 +585,8 @@ static int usb_ep_release(const u8 ep)
 	(void)ep;
 #endif
 	if (fsm_state == MSC_ST_ERROR)
+		err_flag = 1;
+	else if (fsm_state == MSC_ST_CSW)
 		err_flag = 1;
 
 	if ((fsm_state == MSC_ST_CBW) && (ep == 2))
