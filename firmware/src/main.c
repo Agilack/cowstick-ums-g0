@@ -17,6 +17,7 @@
 #include "libc.h"
 #include "mem.h"
 #include "spi.h"
+#include "time.h"
 #include "uart.h"
 #include "usb.h"
 #include "usb_msc.h"
@@ -29,15 +30,19 @@ void test_mem(void);
  */
 int main(void)
 {
+	u32  tm;
 	uint i;
 
 	/* Initialize low-level hardware */
 	hw_init();
+	time_init();
 	/* Initialize peripherals */
 	uart_init();
 	spi_init();
+	usb_init();
 	/* Initialize libraries */
 	mem_init();
+	usb_msc_init();
 
 	uart_puts("--=={ Cowstick UMS }==--\r\n");
 
@@ -61,29 +66,28 @@ int main(void)
 			uart_puts("\r\n");
 		}
 	}
-	usb_init();
-	usb_msc_init();
 	usb_start();
 
 #ifdef TEST_MEM
 	test_mem();
 #endif
+	tm = time_now(0);
 	/* LED blink infinite loop */
 	while(1)
 	{
 		usb_periodic();
-#ifdef not_defined
-		/* LED off */
-		reg_wr(GPIOB + 0x18, (1 << 5));
-		/* Wait (long) */
-		for (i = 0; i < 0x100000; i++)
-			asm volatile("nop");
-		/* LED on */
-		reg_wr(GPIOB + 0x18, (1 << 21));
-		/* Wait (short) */
-		for (i = 0; i < 0x100000; i++)
-			asm volatile("nop");
-#endif
+
+		/* Blink led1 */
+		if (time_since(tm) > 400)
+		{
+			if (reg_rd(GPIOB + 0x10) & (1 << 5))
+				/* Set LED on */
+				reg_wr(GPIOB + 0x18, (1 << 21));
+			else
+				/* Set LED off */
+				reg_wr(GPIOB + 0x18, (1 << 5));
+			tm = time_now(0);
+		}
 	}
 }
 

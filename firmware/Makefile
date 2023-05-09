@@ -17,7 +17,7 @@ TARGET   ?= firmware
 CROSS    ?= arm-none-eabi-
 BUILDDIR ?= build
 
-SRC  = main.c hardware.c uart.c spi.c usb.c
+SRC  = main.c hardware.c uart.c spi.c time.c usb.c
 SRC += scsi.c usb_msc.c
 SRC += libc.c mem.c
 ASRC = startup.s libasm.s

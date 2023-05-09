@@ -61,6 +61,11 @@ void hw_init(void);
 #define GPIOD  0x50000C00
 #define GPIOE  0x50001000
 #define GPIOF  0x50001400
+/* Cortex-M7 Internal Peripherals */
+#define CM0_SYSTICK 0xE000E010
+#define CM0_NVIC    0xE000E100
+#define CM0_SCB     0xE000ED00
+#define CM0_MPU     0xE000ED90
 
 #define GPIO_MODER(x)   (x + 0x00)
 #define GPIO_OTYPER(x)  (x + 0x04)
