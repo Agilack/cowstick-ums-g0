@@ -14,10 +14,10 @@
  * This program is distributed WITHOUT ANY WARRANTY.
  */
 #include "libc.h"
+#include "log.h"
 #include "mem.h"
 #include "spi.h"
 #include "types.h"
-#include "uart.h"
 
 //#define MEM_FLASH_INFO
 //#define MEM_FLASH_DEBUG
@@ -125,7 +125,7 @@ int mem_erase(uint nid, u32 addr, uint len)
 		}
 		else
 		{
-			uart_puts("MEM: Fail to erase flash (unaligned address)\r\n");
+			log_puts("MEM: Fail to erase flash (unaligned address)\n");
 			len = 0;
 		}
 	}
@@ -137,7 +137,7 @@ int mem_erase(uint nid, u32 addr, uint len)
 	else
 	{
 #ifdef MEM_FLASH_DEBUG
-		uart_puts("MEM: Failed to read (Invalid node type)\r\n");
+		log_puts("MEM: Failed to read (Invalid node type)\n");
 #endif
 		len = 0;
 	}
@@ -197,7 +197,7 @@ int mem_read(uint nid, u32 addr, uint len, u8 *buffer)
 	else
 	{
 #ifdef MEM_FLASH_DEBUG
-		uart_puts("MEM: Failed to read (Invalid node type)\r\n");
+		log_puts("MEM: Failed to read (Invalid node type)\n");
 #endif
 		len = 0;
 	}
@@ -256,7 +256,7 @@ int mem_write(uint nid, u32 addr, uint len, u8 *buffer)
 	else
 	{
 #ifdef MEM_FLASH_DEBUG
-		uart_puts("MEM: Failed to write (Invalid node type)\r\n");
+		log_puts("MEM: Failed to write (Invalid node type)\n");
 #endif
 		len = 0;
 	}
@@ -317,11 +317,8 @@ static const mem_flash_chip *flash_detect(uint channel)
 #ifdef MEM_FLASH_DEBUG
 	if (chip == 0)
 	{
-		uart_puts("Unknown flash chip detected, vid=");
-		uart_puthex(vendor_id, 8);
-		uart_puts(" device=");
-		uart_puthex(device_id, 16);
-		uart_puts("\r\n");
+		log_print(LOG_DBG, "Unknown flash chip detected, ");
+		log_print(LOG_DBG, "vid=%8x device=%16x\n", vendor_id, device_id);
 	}
 #endif
 
@@ -340,9 +337,7 @@ static int flash_erase(uint channel, u32 addr)
 	u8  status;
 	int i;
 #ifdef MEM_FLASH_INFO
-	uart_puts("FLASH: Erase 4k sector");
-	uart_puts(" address "); uart_puthex(addr, 24);
-	uart_puts("\r\n");
+	log_print(LOG_INF, "FLASH: Erase 4k sector at address %24x\n", addr);
 #endif
 	flash_write_enable(channel);
 
@@ -367,7 +362,7 @@ static int flash_erase(uint channel, u32 addr)
 		status = spi_rw(channel, 0x00);
 		if (status & (1 << 5))
 		{
-			uart_puts("FLASH: Erase ERROR\r\n");
+			log_puts("FLASH: Erase ERROR\n");
 			break;
 		}
 		else if ((status & 1) == 0)
@@ -377,11 +372,7 @@ static int flash_erase(uint channel, u32 addr)
 	spi_cs(channel, 0);
 
 #ifdef MEM_FLASH_DEBUG
-	uart_puts("  - status ");
-	uart_puthex(status, 8);
-	uart_puts(" (");
-	uart_putdec((uint)i);
-	uart_puts(")\r\n");
+	log_print(LOG_INF, "  - status %8x (%d)\n", status, i);
 #endif
 	// TODO Handle error ...
 
@@ -401,9 +392,7 @@ static int flash_read(uint channel, u8 *buffer, u32 addr, uint len)
 	uint i;
 
 #ifdef MEM_FLASH_INFO
-	uart_puts("FLASH: Read ");   uart_putdec(len);
-	uart_puts(" bytes from 0x"); uart_puthex(addr, 24);
-	uart_puts(" ... ");
+	log_print(LOG_INF, "FLASH: Read %d bytes from 0x%24x ... ", len, addr);
 #endif
 	/* Enable selected chip (CS) */
 	spi_cs(channel, 1);
@@ -422,7 +411,7 @@ static int flash_read(uint channel, u8 *buffer, u32 addr, uint len)
 	spi_cs(channel, 0);
 
 #ifdef MEM_FLASH_INFO
-	uart_puts("done.\r\n");
+	log_print(LOG_INF, "done.\n");
 #endif
 
 	return(0);
@@ -443,9 +432,7 @@ static int flash_write(uint channel, u8 *buffer, u32 addr, uint len)
 	uint i;
 
 #ifdef MEM_FLASH_INFO
-	uart_puts("FLASH: Write "); uart_putdec(len);
-	uart_puts(" bytes to ");    uart_puthex(addr, 24);
-	uart_puts("\r\n");
+	log_print(LOG_INF, "FLASH: Write %d bytes to 0x%24x\n", len, addr);
 #endif
 
 	p    = buffer;
@@ -457,9 +444,7 @@ static int flash_write(uint channel, u8 *buffer, u32 addr, uint len)
 		else
 			i = len;
 #ifdef MEM_FLASH_DEBUG
-		uart_puts("FLASH: Write page ("); uart_putdec(i);
-		uart_puts(" bytes) to ");         uart_puthex(addr, 24);
-		uart_puts("\r\n");
+		log_print(LOG_INF, "FLASH: Write page (%d bytes) to %24x\n", i, addr);
 #endif
 		flash_write_enable(channel);
 
@@ -490,7 +475,7 @@ static int flash_write(uint channel, u8 *buffer, u32 addr, uint len)
 			status = spi_rw(channel, 0x00);
 			if (status & (1 << 5))
 			{
-				uart_puts("FLASH: Write ERROR\r\n");
+				log_puts("FLASH: Write ERROR\n");
 				break;
 			}
 			else if ((status & 1) == 0)
@@ -512,7 +497,7 @@ static int flash_write(uint channel, u8 *buffer, u32 addr, uint len)
 static void flash_write_enable(uint channel)
 {
 #ifdef MEM_FLASH_DEBUG
-	uart_puts("FLASH: Set Write Enable bit");
+	log_print(LOG_INF, "FLASH: Set Write Enable bit");
 #endif
 	/* Enable selected chip (CS) */
 	spi_cs(channel, 1);
@@ -527,9 +512,8 @@ static void flash_write_enable(uint channel)
 	/* Send command: Read Status Register */
 	spi_rw(channel, 0x05);
 	/* Log current status */
-	uart_puts(", status=");
-	uart_puthex(spi_rw(channel, 0x00), 8);
-	uart_puts("\r\n");
+	log_print(LOG_INF, ", status=%8x\n",
+	    spi_rw(channel, 0x00) );
 	/* Disable chip (CS) */
 	spi_cs(channel, 0);
 #endif

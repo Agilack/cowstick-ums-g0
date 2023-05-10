@@ -14,10 +14,10 @@
  * This program is distributed WITHOUT ANY WARRANTY.
  */
 #include "libc.h"
+#include "log.h"
 #include "mem.h"
 #include "scsi.h"
 #include "types.h"
-#include "uart.h"
 
 static inline int cmd6(u8 *cb, uint len);
 static inline int cmd10(u8 *cb, uint len);
@@ -43,7 +43,7 @@ void scsi_init(void)
 	request_sense.code = 0x70;
 	request_sense.length = 10;
 
-	uart_puts("SCSI: Initialized\r\n");
+	log_puts("SCSI: Initialized\n");
 }
 
 /**
@@ -83,19 +83,19 @@ int scsi_command(u8 *cb, uint len)
 			break;
 		// If packet contains a 16-bytes CBD command
 		case 4:
-			uart_puts("SCSI: CBD-16 commands not supported yet\r\n");
+			log_puts("SCSI: CBD-16 commands not supported yet\n");
 			goto err_illegal;
 		// If packet contains a 12-bytes CBD command
 		case 5:
-			uart_puts("SCSI: CBD-12 commands not supported yet\r\n");
+			log_puts("SCSI: CBD-12 commands not supported yet\n");
 			goto err_illegal;
 		// If packet contains a vendor specific CBD command
 		case 6:
 		case 7:
-			uart_puts("SCSI: CBD-Vendor commands not supported yet\r\n");
+			log_puts("SCSI: CBD-Vendor commands not supported yet\n");
 			goto err_illegal;
 		default:
-			uart_puts("SCSI: Unknown CBD format\r\n");
+			log_puts("SCSI: Unknown CBD format\n");
 			goto err_illegal;
 	}
 
@@ -214,9 +214,7 @@ static inline int cmd6(u8 *cb, uint len)
 		default:
 			request_sense.key = 0x05; // Illegal Request
 			request_sense.asc = 0x20; // Invalid Command
-			uart_puts("SCSI: Unknown CMD6 ");
-			uart_puthex(cb[0], 8);
-			uart_puts("\r\n");
+			log_print(LOG_WRN, "SCSI: Unknown CMD6 %8x\n", cb[0]);
 	}
 	return(-1);
 
@@ -259,14 +257,8 @@ static inline int cmd6_inquiry(u8 *cb, uint len)
 	};
 	(void)len;
 
-	uart_color(3);
-	uart_puts("SCSI: Inquiry ");
-	uart_color(0);
-	uart_puthex(cb[1], 8); uart_putc(' ');
-	uart_puthex(cb[2], 8); uart_putc(' ');
-	uart_puthex(cb[3], 8);
-	uart_puthex(cb[4], 8);
-	uart_puts("\r\n");
+	log_print(LOG_INF, "%{SCSI: Inquiry%} %8x %8x %8x%8x\n",
+	          LOG_YLW, cb[1], cb[2], cb[3], cb[4]);
 
 	if (cb[1] & 0xFE)
 		goto err_invalid_field;
@@ -291,9 +283,7 @@ static inline int cmd6_inquiry(u8 *cb, uint len)
 				scsi_len = sizeof(pg83);
 				break;
 			default:
-				uart_puts(" - Unknown page ");
-				uart_puthex(cb[2], 8);
-				uart_puts("\r\n");
+				log_print(LOG_WRN, " - Unknown page %8x\n", cb[2]);
 				goto err_invalid_field;
 				break;
 		}
@@ -325,14 +315,8 @@ static inline int cmd6_mode_sense(u8 *cb)
 {
 	if (scsi_log & SCSI_LOG_SENSE)
 	{
-		uart_color(3);
-		uart_puts("SCSI: Mode Sense ");
-		uart_color(0);
-		uart_puthex(cb[1], 8); uart_putc(' ');
-		uart_puthex(cb[2], 8); uart_putc(' ');
-		uart_puthex(cb[3], 8); uart_putc(' ');
-		uart_puthex(cb[4], 8); uart_putc(' ');
-		uart_puts("\r\n");
+		log_print(LOG_INF, "%{SCSI: Mode Sense %} %8x %8x %8x %8x\n",
+		    LOG_YLW, cb[1], cb[2], cb[3], cb[4]);
 	}
 	scsi_data[0] = 0x03;
 	scsi_data[1] = 0; // Medium type
@@ -355,11 +339,8 @@ static inline int cmd6_prevent_media_removal(u8 *cb)
 {
 	if (scsi_log & SCSI_LOG_MEDIUM)
 	{
-		uart_color(3);
-		uart_puts("SCSI: Prevent/Allow Medium Removal ");
-		uart_puthex(cb[4], 8);
-		uart_puts("\r\n");
-		uart_color(0);
+		log_print(LOG_INF, "%{SCSI: Prevent/Allow Medium Removal %8x%}\n",
+		    LOG_YLW, cb[4]);
 	}
 	// TODO The value is not used yet ... do something ?
 
@@ -379,13 +360,11 @@ static inline int cmd6_request_sense(void)
 
 	if (scsi_log & SCSI_LOG_SENSE)
 	{
-		uart_color(3);
-		uart_puts("SCSI: Request Sense");
-		uart_puts(" key=");  uart_puthex(request_sense.key,  8);
-		uart_puts(" code="); uart_puthex(request_sense.asc,  8);
-		uart_puts(" qual="); uart_puthex(request_sense.ascq, 8);
-		uart_puts("\r\n");
-		uart_color(0);
+		log_print(LOG_INF, "%{SCSI: Request Sense", LOG_YLW);
+		log_print(LOG_INF, " key=%8x",  request_sense.key);
+		log_print(LOG_INF, " code=%8x", request_sense.asc);
+		log_print(LOG_INF, " qual=%8x", request_sense.ascq);
+		log_print(LOG_INF, "%}\n");
 	}
 
 	len = sizeof(scsi_request_sense);
@@ -404,12 +383,8 @@ static inline int cmd6_start_stop_unit(u8 *cb)
 {
 	if (scsi_log & SCSI_LOG_MEDIUM)
 	{
-		uart_color(3);
-		uart_puts("SCSI: Start/Stop Unit ");
-		uart_puthex(cb[3], 8); uart_putc(' ');
-		uart_puthex(cb[4], 8);
-		uart_puts("\r\n");
-		uart_color(0);
+		log_print(LOG_INF, "%{SCSI: Start/Stop Unit %8x %8x%}\n",
+		    LOG_YLW, cb[3], cb[4]);
 	}
 	// TODO The value is not used yet ... do something ?
 
@@ -423,11 +398,7 @@ static inline int cmd6_start_stop_unit(u8 *cb)
 static inline int cmd6_test_ready(void)
 {
 	if (scsi_log & SCSI_LOG_TEST_READY)
-	{
-		uart_color(3);
-		uart_puts("SCSI: Test Unit Ready\r\n");
-		uart_color(0);
-	}
+		log_print(LOG_INF, "%{SCSI: Test Unit Ready%}\n", LOG_YLW);
 
 	return(0);
 }
@@ -468,9 +439,7 @@ static inline int cmd10(u8 *cb, uint len)
 		default:
 			request_sense.key = 0x05; // Illegal Request
 			request_sense.asc = 0x20; // Invalid Command
-			uart_puts("SCSI: Unknown CMD10 ");
-			uart_puthex(cb[0], 8);
-			uart_puts("\r\n");
+			log_print(LOG_WRN, "SCSI: Unknown CMD10 %8x\n", cb[0]);
 	}
 	return(-1);
 
@@ -501,16 +470,10 @@ static inline int cmd10_read(u8 *cb, uint len)
 
 	if ((scsi_log & SCSI_LOG_READ) && (scsi_ctx == 0))
 	{
-		uart_color(3);
-		uart_puts("SCSI: Read block ");
-		uart_puthex(htonl(pkt->lba), 32);
-		uart_puts(" count=");
-		uart_putdec(htons(pkt->length));
-		uart_puts(" current=");
-		uart_putdec(scsi_ctx);
-		uart_puts("\r\n");
-		uart_color(0);
-		uart_flush();
+		log_print(LOG_INF, "%{SCSI: Read block %32x", LOG_YLW, htonl(pkt->lba));
+		log_print(LOG_INF, " count=%d",   htons(pkt->length));
+		log_print(LOG_INF, " current=%d", scsi_ctx);
+		log_print(LOG_INF, "%}\n");
 	}
 
 	addr = (htonl(pkt->lba) + scsi_ctx) * 512;
@@ -531,12 +494,7 @@ static inline int cmd10_read_capacity(void)
 	} *rsp;
 
 	if (scsi_log & SCSI_LOG_CAPACITY)
-	{
-		uart_color(3);
-		uart_puts("SCSI: Read Capacity\r\n");
-		uart_color(0);
-		//uart_flush();
-	}
+		log_print(LOG_INF, "%{SCSI: Read Capacity%}\n", LOG_YLW);
 
 	rsp = (struct response *)&scsi_data;
 	scsi_len = sizeof(struct response);
@@ -559,11 +517,7 @@ static inline int cmd10_read_format_capacities(void)
 	} *rsp;
 
 	if (scsi_log & SCSI_LOG_CAPACITY)
-	{
-		uart_color(3);
-		uart_puts("SCSI: Read Format Capacities\r\n");
-		uart_color(0);
-	}
+		log_print(LOG_INF, "%{SCSI: Read Format Capacities%}\n", LOG_YLW);
 
 	rsp = (struct response *)&scsi_data;
 	scsi_len = sizeof(struct response);
@@ -596,16 +550,10 @@ static inline int cmd10_write(u8 *cb, uint len)
 
 	if (scsi_log & SCSI_LOG_WRITE)
 	{
-		uart_color(3);
-		uart_puts("SCSI: Write block ");
-		uart_puthex(htonl(req->lba), 32);
-		uart_puts(" count=");
-		uart_putdec(transfer_length);
-		uart_puts(" current=");
-		uart_putdec(scsi_ctx);
-		uart_puts("\r\n");
-		uart_color(0);
-		//uart_flush();
+		log_print(LOG_INF, "%{SCSI: Write block %32x", LOG_YLW, htonl(req->lba));
+		log_print(LOG_INF, " count=%d", transfer_length);
+		log_print(LOG_INF, " current=%d", scsi_ctx);
+		log_print(LOG_INF, "%}\n");
 	}
 
 	if (scsi_ctx == 0)
@@ -619,20 +567,12 @@ static inline int cmd10_write(u8 *cb, uint len)
 		if ((addr & 0xFFFFF000) != node->cache_addr)
 		{
 			if (scsi_log & SCSI_LOG_WRITE)
-			{
-				uart_puts("SCSI: Write, cache new page ");
-				uart_puthex(addr, 32);
-				uart_puts("\r\n");
-			}
+				log_print(LOG_INF, "SCSI: Write, cache new page %32x\n", addr);
 			mem_write(0, 0, 0, 0);
 			mem_read(0, addr, 512, 0);
 		}
 		if (scsi_log & SCSI_LOG_WRITE)
-		{
-			uart_puts("SCSI: Write at ");
-			uart_puthex(addr, 32);
-			uart_puts("\r\n");
-		}
+			log_print(LOG_INF, "SCSI: Write at %32x\n", addr);
 		memcpy(node->cache_buffer + (addr & 0xFFF), scsi_data, 512);
 	}
 	scsi_len = 0;

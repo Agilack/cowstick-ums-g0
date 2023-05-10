@@ -14,9 +14,9 @@
  * This program is distributed WITHOUT ANY WARRANTY.
  */
 #include "libc.h"
+#include "log.h"
 #include "scsi.h"
 #include "types.h"
-#include "uart.h"
 #include "usb.h"
 #include "usb_msc.h"
 
@@ -59,7 +59,7 @@ void usb_msc_init(void)
 	msc_if.ctrl_req = usb_if_ctrl;
 	usb_if_register(0, &msc_if);
 
-	uart_puts("USB_MSC: Initialized\r\n");
+	log_puts("USB_MSC: Initialized\n");
 }
 
 
@@ -101,7 +101,7 @@ static void _periodic(void)
 		}
 		else
 			rst_flag = 0;
-		uart_puts("USB_MSC: Reseted\r\n");
+		log_print(LOG_INF, "USB_MSC: Reseted\n");
 	}
 
 	/* Dispatch to functions dedicated to each state */
@@ -143,20 +143,16 @@ static void cbw_dump(void)
 {
 	int i;
 
-	uart_puts(" - Signature:          "); uart_puthex(cbw.signature, 32);   uart_puts("\r\n");
-	uart_puts(" - Tag:                "); uart_puthex(cbw.tag, 32);         uart_puts("\r\n");
-	uart_puts(" - DataTransferLength: "); uart_puthex(cbw.data_length, 32); uart_puts("\r\n");
-	uart_puts(" - Flags:              "); uart_puthex(cbw.flags, 8);        uart_puts("\r\n");
-	uart_puts(" - LUN:                "); uart_puthex(cbw.lun, 8);          uart_puts("\r\n");
-	uart_puts(" - CBLength:           "); uart_puthex(cbw.cb_len, 8);       uart_puts("\r\n");
-	uart_puts(" - Command Block:\r\n");
+	log_print(LOG_DBG, " - Signature:          %32x\n", cbw.signature);
+	log_print(LOG_DBG, " - Tag:                %32x\n", cbw.tag);
+	log_print(LOG_DBG, " - DataTransferLength: %32x\n", cbw.data_length);
+	log_print(LOG_DBG, " - Flags:              %8x\n",  cbw.flags);
+	log_print(LOG_DBG, " - LUN:                %8x\n",  cbw.lun);
+	log_print(LOG_DBG, " - CBLength:           %8x\n",  cbw.cb_len);
+	log_print(LOG_DBG, " - Command Block:\n");
 	for (i = 0; i < 16; i++)
-	{
-		if (i % 16)
-			uart_puts(" ");
-		uart_puthex(cbw.cb[i], 8);
-	}
-	uart_puts("\r\n");
+		log_print(LOG_DBG, "%8x ", cbw.cb[i]);
+	log_print(LOG_DBG, "\n");
 }
 
 /**
@@ -175,13 +171,8 @@ static inline void fsm_cbw(void)
 	rx_flag = 0;
 
 #ifdef MSC_DEBUG_CBW
-	uart_puts("USB_MSC: [");
-	uart_color(4);
-	uart_puthex(cbw.tag, 32);
-	uart_color(0);
-	uart_puts("] Receive CBW data_len=");
-	uart_putdec(cbw.data_length);
-	uart_puts("\r\n");
+	log_print(LOG_DBG, "USB_MSC: [%{%32x%}] ", LOG_BLU, cbw.tag);
+	log_print(LOG_DBG, "Receive CBW data_len=%d\n", cbw.data_length);
 #endif
 
 	/* Clear response structure */
@@ -259,7 +250,7 @@ static inline void fsm_cbw(void)
 			}
 			else
 			{
-				uart_puts("USB_MSC: SCSI error, Data IN but no data\r\n");
+				log_puts("USB_MSC: SCSI error, Data IN but no data\n");
 				goto err;
 			}
 			break;
@@ -358,27 +349,13 @@ static inline void fsm_csw(void)
 	if (csw.signature == 0)
 	{
 #ifdef MSC_DEBUG_CSW
-		uart_puts("USB_MSC: [");
-		uart_color(4);
-		uart_puthex(cbw.tag, 32);
-		uart_color(0);
-		uart_puts("] Complete (");
+		log_print(LOG_DBG, "USB_MSC: [%{%32x%}] ", LOG_BLU, cbw.tag);
+		log_print(LOG_DBG, "Complete (");
 		if (csw.status == 0)
-		{
-			uart_color(2);
-			uart_puts("success");
-		}
+			log_print(LOG_DBG, "%{success%}", LOG_GRN);
 		else
-		{
-			uart_color(1);
-			uart_puts("error ");
-			uart_puthex(csw.status, 8);
-		}
-		uart_color(0);
-		uart_puts("), send CSW residue=");
-		uart_putdec(csw.residue);
-		uart_puts("\r\n");
-		uart_flush();
+			log_print(LOG_DBG, "%{error %x%}", LOG_RED, csw.status);
+		log_print(LOG_DBG, "), send CSW residue=%d\n", csw.residue);
 #endif
 		/* Inform SCSI layer that current transaction is complete */
 		scsi_complete();
@@ -470,13 +447,13 @@ static void fsm_data_in(void)
 			}
 			else
 			{
-				uart_puts("USB_MSC: SCSI error, Data IN early ends\r\n");
+				log_puts("USB_MSC: SCSI error, Data IN early ends\n");
 				goto err;
 			}
 			break;
 		}
 		default:
-			uart_puts("USB_MSC: Unknown SCSI result during Data IN\r\n");
+			log_puts("USB_MSC: Unknown SCSI result during Data IN\n");
 			goto err;
 	}
 	return;
@@ -507,9 +484,8 @@ static void fsm_data_out(void)
 	csw.residue -= data_offset;
 
 #ifdef MSC_DEBUG_USB
-	uart_puts("USB_MSC: DATA_OUT, ");
-	uart_putdec(csw.residue);
-	uart_puts(" more bytes to receive\r\n");
+	log_print(LOG_DBG, "USB_MSC: DATA_OUT, %d more bytes to receive\n",
+	    csw.residue);
 #endif
 
 	result = scsi_command(cbw.cb, cbw.cb_len);
@@ -575,12 +551,7 @@ static inline void fsm_error(void)
 static int usb_ep_release(const u8 ep)
 {
 #ifdef MSC_DEBUG_USB
-	uart_puts("USB_MSC: Release endpoint ");
-	uart_putdec(ep);
-	uart_puts(" ");
-	uart_putdec(fsm_state);
-	uart_puts("\r\n");
-	uart_flush();
+	log_print(LOG_DBG, "USB_MSC: Release endpoint %d %d\n", ep, fsm_state);
 #else
 	(void)ep;
 #endif
@@ -611,11 +582,8 @@ static int usb_ep_rx(u8 *data, uint len)
 	uint avail, i;
 
 #ifdef MSC_DEBUG_USB
-	uart_puts("USB_MSC: Receive ");
-	uart_putdec(len);
-	uart_puts(" bytes (fsm=");
-	uart_putdec(fsm_state);
-	uart_puts(")\r\n");
+	log_print(LOG_DBG, "USB_MSC: Receive %d bytes (fsm=%d)\n",
+	    len, fsm_state);
 #endif
 
 	if (fsm_state == MSC_ST_DATA_OUT)
@@ -624,11 +592,8 @@ static int usb_ep_rx(u8 *data, uint len)
 		avail = 0;
 		dout = scsi_set_data(0, &avail);
 #ifdef MSC_DEBUG_USB
-		uart_puts("USB_MSC: Receive ");
-		uart_putdec(len);
-		uart_puts(" bytes, ");
-		uart_putdec(avail);
-		uart_puts(" available\r\n");
+		log_print(LOG_DBG, "USB_MSC: Receive %d bytes, %d available\n",
+		    len, avail);
 #endif
 		if (avail < len)
 			len = avail;
@@ -649,7 +614,7 @@ static int usb_ep_rx(u8 *data, uint len)
 	{
 		if (len > sizeof(msc_cbw))
 		{
-			uart_puts("USB_MSC: Receive too large packet\r\n");
+			log_puts("USB_MSC: Receive too large packet\n");
 			len = sizeof(msc_cbw);
 		}
 
@@ -730,11 +695,8 @@ static int usb_if_ctrl(usb_ctrl_request *req, uint len, u8 *data)
 		if (value > 0)
 			value --;
 		usb_send(0, (u8*)&value, 1);
-		uart_puts("USB_MSC: GetMaxLUN = ");
-		uart_putdec(value);
-		uart_puts(" (");
-		uart_putdec(value+1);
-		uart_puts(" LUN)\r\n");
+		log_print(LOG_DBG, "USB_MSC: GetMaxLUN=%d (%d LUN)\n",
+		    value, value+1);
 	}
 	/* Bulk Only class-specific Reset (reset recovery) */
 	else if ((req->bmRequestType == 0x21) && (req->bRequest == 0xFF))
@@ -742,23 +704,19 @@ static int usb_if_ctrl(usb_ctrl_request *req, uint len, u8 *data)
 		/* To avoid race condition, reset sequence */
 		rst_flag = 1;
 
-		uart_puts("USB_MSC: Class RESET\r\n");
-		uart_flush();
+		log_print(LOG_INF, "USB_MSC: Class RESET\n");
 		return(1);
 	}
 #ifdef MSC_DEBUG_USB
 	else
 	{
-		uart_puts("USB_MSC: Control request (len=");
-		uart_putdec(len);
-		uart_puts(")\r\n");
+		log_print(LOG_DBG, "USB_MSC: Control request (len=%d)\n", len);
 
-		uart_puts("bmRequestType="); uart_puthex(req->bmRequestType, 8);
-		uart_puts(" bRequest=");     uart_puthex(req->bRequest, 8);
-		uart_puts(" wValue=");       uart_puthex(req->wValue, 16);
-		uart_puts(" wIndex=");       uart_puthex(req->wIndex, 16);
-		uart_puts(" wLength=");      uart_puthex(req->wLength, 16);
-		uart_puts("\r\n");
+		log_print(LOG_DBG, "bmRequestType=%8x ", req->bmRequestType);
+		log_print(LOG_DBG, "bRequest=%8x ",      req->bRequest);
+		log_print(LOG_DBG, "wValue=%16x ",       req->wValue);
+		log_print(LOG_DBG, "wIndex=%16x ",       req->wIndex);
+		log_print(LOG_DBG, "wLength=%16x\n",     req->wLength);
 		return(-1);
 	}
 #else
@@ -792,7 +750,7 @@ static void usb_if_enable(int cfg_id)
 	usb_ep_configure(1, USB_EP_BULK, &ep_def);
 
 #ifdef MSC_INFO
-	uart_puts("USB_MSC: Enabled\r\n");
+	log_print(LOG_DBG, "USB_MSC: Enabled\n");
 #endif
 }
 
@@ -806,7 +764,7 @@ static void usb_if_enable(int cfg_id)
 static void usb_if_reset(void)
 {
 #ifdef MSC_INFO
-	uart_puts("USB_MSC: Reset\r\n");
+	log_print(LOG_DBG, "USB_MSC: Reset\n");
 #endif
 	rst_flag = 2;
 

@@ -13,8 +13,8 @@
  * program, see LICENSE.md file for more details.
  * This program is distributed WITHOUT ANY WARRANTY.
  */
+#include "log.h"
 #include "types.h"
-#include "uart.h"
 #include "usb.h"
 #include "usb_bulk.h"
 
@@ -40,7 +40,7 @@ void usb_bulk_init(void)
 	bulk_if.ctrl_req = if_ctrl;
 	usb_if_register(0, &bulk_if);
 
-	uart_puts("USB_BULK: Initialized\r\n");
+	log_puts("USB_BULK: Initialized\n");
 }
 
 
@@ -66,34 +66,22 @@ static int usb_bulk_rx(u8 *data, uint len)
 	uint i;
 	char msg[] = "Hello World!";
 
-	uart_puts("BULK: Receive ");
-	uart_putdec(len);
-	uart_puts("\r\n");
+	log_print(LOG_INF, "BULK: Receive %d\n", len);
 	if (len > 16)
 		len = 16;
 	for (i = len; i > 0; i -= 4)
 	{
 		v = *(u32 *)data;
-		uart_puts(" ");
-		uart_puthex(v & 0xFF, 8);
+		log_print(LOG_INF, " %8x", (v & 0xFF));
 		if (i > 1)
-		{
-			uart_puts(" ");
-			uart_puthex((v >> 8) & 0xFF, 8);
-		}
+			log_print(LOG_INF, " %8x", (v >>  8) & 0xFF);
 		if (i > 2)
-		{
-			uart_puts(" ");
-			uart_puthex((v >> 16) & 0xFF, 8);
-		}
+			log_print(LOG_INF, " %8x", (v >> 16) & 0xFF);
 		if (i > 3)
-		{
-			uart_puts(" ");
-			uart_puthex((v >> 24) & 0xFF, 8);
-		}
+			log_print(LOG_INF, " %8x", (v >> 24) & 0xFF);
 		data += 4;
 	}
-	uart_puts("\r\n");
+	log_print(LOG_INF, "\n");
 
 	usb_send(1, (u8*)msg, 12);
 
@@ -110,7 +98,7 @@ static int usb_bulk_rx(u8 *data, uint len)
  */
 static int usb_bulk_tx(void)
 {
-	uart_puts("USB_BULK: TX complete\r\n");
+	log_print(LOG_INF, "USB_BULK: TX complete\n");
 	return(0);
 }
 
@@ -124,40 +112,27 @@ static int if_ctrl(usb_ctrl_request *req, uint len, u8 *data)
 {
 	u32 value = 1;
 
-	uart_puts("USB_BULK: Control request (len=");
-	uart_putdec(len);
-	uart_puts(")\r\n");
+	log_print(LOG_INF, "USB_BULK: Control request (len=%d)\n", len);
 
 	if (data != 0)
 	{
 		value = *(volatile u32 *)data;
-		uart_puts("Receive DATA phase ");
-		uart_puthex(value & 0xFF, 8);
+		log_print(LOG_INF, "Receive DATA phase %8x", value & 0xFF);
 		if (len > 1)
-		{
-			uart_puts(" ");
-			uart_puthex((value >> 8) & 0xFF, 8);
-		}
+			log_print(LOG_INF, " %8x", (v >>  8) & 0xFF);
 		if (len > 2)
-		{
-			uart_puts(" ");
-			uart_puthex((value >> 16) & 0xFF, 8);
-		}
+			log_print(LOG_INF, " %8x", (v >> 16) & 0xFF);
 		if (len > 3)
-		{
-			uart_puts(" ");
-			uart_puthex((value >> 24) & 0xFF, 8);
-		}
-		uart_puts("\r\n");
+			log_print(LOG_INF, " %8x", (v >> 24) & 0xFF);
+		log_print(LOG_INF, "\n");
 		return(1);
 	}
 
-	uart_puts("bmRequestType="); uart_puthex(req->bmRequestType, 8);
-	uart_puts(" bRequest=");     uart_puthex(req->bRequest, 8);
-	uart_puts(" wValue=");       uart_puthex(req->wValue, 16);
-	uart_puts(" wIndex=");       uart_puthex(req->wIndex, 16);
-	uart_puts(" wLength=");      uart_puthex(req->wLength, 16);
-	uart_puts("\r\n");
+	log_print(LOG_INF, "bmRequestType=%8x ", req->bmRequestType);
+	log_print(LOG_INF, "bRequest=%8x ",      req->bRequest);
+	log_print(LOG_INF, "wValue=%16x ",       req->wValue);
+	log_print(LOG_INF, "wIndex=%16x ",       req->wIndex);
+	log_print(LOG_INF, "wLength=%16x\n",      req->wLength);
 
 	/* If request is Device-to-Host and data length is not nul */
 	if ((req->bmRequestType & 0x80) && (req->wLength > 0))
@@ -194,7 +169,7 @@ static void if_enable(int cfg_id)
 	ep_def.tx_complete = usb_bulk_tx;
 	usb_ep_configure(1, USB_EP_BULK, &ep_def);
 
-	uart_puts("USB_BULK: Enabled\r\n");
+	log_print(LOG_INF, "USB_BULK: Enabled\n");
 }
 
 /**
@@ -206,6 +181,6 @@ static void if_enable(int cfg_id)
  */
 static void if_reset(void)
 {
-	uart_puts("USB_BULK: Reset\r\n");
+	log_print(LOG_INF, "USB_BULK: Reset\n");
 }
 /* EOF */

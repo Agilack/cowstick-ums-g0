@@ -15,6 +15,7 @@
  */
 #include "hardware.h"
 #include "libc.h"
+#include "log.h"
 #include "mem.h"
 #include "spi.h"
 #include "time.h"
@@ -41,10 +42,11 @@ int main(void)
 	spi_init();
 	usb_init();
 	/* Initialize libraries */
+	log_init();
 	mem_init();
 	usb_msc_init();
 
-	uart_puts("--=={ Cowstick UMS }==--\r\n");
+	log_print(0, "--=={ Cowstick UMS }==--\r\n");
 
 	mem_detect();
 	for (i = 0; i < MEM_NODE_COUNT; i++)
@@ -52,18 +54,14 @@ int main(void)
 		mem_node *node = mem_get_node(i);
 		if (node == 0)
 			break;
-		uart_puts("Memory slot #");
-		uart_putdec(i);
-		uart_puts(" : ");
+		log_print(LOG_INF, "Memory slot #%d : ", i);
 		if (node->type == 0)
-			uart_puts("Empty\r\n");
+			log_print(LOG_INF, "Empty\n");
 		else if (node->type == 1)
 		{
 			const mem_flash_chip *fc;
-			uart_puts("FLASH ");
 			fc = (const mem_flash_chip *)node->chip;
-			uart_puts(fc->name);
-			uart_puts("\r\n");
+			log_print(LOG_INF, "FLASH %s\n", fc->name);
 		}
 	}
 	usb_start();
@@ -97,18 +95,16 @@ void test_mem(void)
 	mem_node *node = mem_get_node(0);
 	uint i;
 
-	uart_puts("read() result=");
-	uart_putdec( (uint)mem_read(0, 0x000000, 512, 0) );
-	uart_puts("\r\n");
-	uart_dump(node->cache_buffer, 64);
+	log_print(0, "read() result=%d\n",
+	    (uint)mem_read(0, 0x000000, 512, 0) );
+	log_dump(node->cache_buffer, 64, 2);
 
 	memset(node->cache_buffer, 0, 4096);
 	mem_write(0, 0x000000, 512, 0);
 
-	uart_puts("read() result=");
-	uart_putdec( (uint)mem_read(0, 0x000000, 512, 0) );
-	uart_puts("\r\n");
-	uart_dump(node->cache_buffer, 64);
+	log_print(0, "read() result=%d\n",
+	    (uint)mem_read(0, 0x000000, 512, 0) );
+	log_dump(node->cache_buffer, 64, 2);
 
 	for (i = 0; i < 16; i++)
 	{
@@ -119,17 +115,16 @@ void test_mem(void)
 	}
 	mem_write(0, 0x000000, 512, 0);
 
-	uart_puts("read() result=");
-	uart_putdec( (uint)mem_read(0, 0x000000, 512, 0) );
-	uart_puts("\r\n");
-	uart_dump(node->cache_buffer, 64);
+	log_print(0, "read() result=%d\n",
+	    (uint)mem_read(0, 0x000000, 512, 0) );
+	log_dump(node->cache_buffer, 64, 2);
 
 	mem_erase(0, 0x000000, 512);
 
-	uart_puts("read() result=");
-	uart_putdec( (uint)mem_read(0, 0x000000, 512, 0) );
-	uart_puts("\r\n");
-	uart_dump(node->cache_buffer, 64);
+	log_print(0, "read() result=%d\n",
+	    (uint)mem_read(0, 0x000000, 512, 0) );
+	log_dump(node->cache_buffer, 64, 2);
+	while(1);
 }
 #endif
 /* EOF */
