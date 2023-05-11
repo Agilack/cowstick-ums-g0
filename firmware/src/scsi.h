@@ -17,6 +17,8 @@
 #define SCSI_H
 #include "types.h"
 
+#define SCSI_USE_CACHE
+
 #define SCSI_CMD6_TEST_READY       0x00
 #define SCSI_CMD6_REQUEST_SENSE    0x03
 #define SCSI_CMD6_INQUIRY          0x12
@@ -28,6 +30,7 @@
 #define SCSI_CMD10_READ          0x28
 #define SCSI_CMD10_WRITE         0x2A
 
+#define SCSI_LOG_ERR        (1 << 0)
 #define SCSI_LOG_TEST_READY (1 << 1)
 #define SCSI_LOG_SENSE      (1 << 2)
 #define SCSI_LOG_READ       (1 << 8)
@@ -37,11 +40,15 @@
 
 typedef struct
 {
-	u8   op;
-	uint lba;
-	u8   opt_len;
-	u8   control;
-} scsi_cdb_6;
+	uint state;
+	uint capacity; // Number of 512 bytes sectors
+	uint writable;
+	/* LUN functions */
+	int  (*rd)(u32 addr, u32 len, u8 *data);
+	int  (*wr)(u32 addr, u32 len, u8 *data);
+	int  (*wr_complete)(void);
+	int  (*wr_preload)(u32 addr);
+} lun;
 
 typedef struct __attribute__((packed))
 {
@@ -58,9 +65,11 @@ typedef struct __attribute__((packed))
 } scsi_request_sense;
 
 void scsi_init(void);
+void scsi_reset(void);
 int  scsi_command(u8 *cb, uint len);
 void scsi_complete(void);
 uint scsi_lun_count(void);
+lun *scsi_lun_get(int pos);
 u8  *scsi_get_response(uint *len);
 u8  *scsi_set_data(u8 *data, uint *len);
 

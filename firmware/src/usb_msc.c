@@ -304,7 +304,8 @@ static inline void fsm_cbw(void)
 			/* First, dump the content of this request (debug) */
 			cbw_dump();
 			goto err;
-			break;
+		case -3:
+			goto err;
 	}
 	return;
 
@@ -768,6 +769,6 @@ static void usb_if_reset(void)
 #endif
 	rst_flag = 2;
 
-	scsi_init();
+	scsi_reset();
 }
 /* EOF */

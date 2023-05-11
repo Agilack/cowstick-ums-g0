@@ -22,6 +22,7 @@
 static inline int cmd6(u8 *cb, uint len);
 static inline int cmd10(u8 *cb, uint len);
 
+static lun  scsi_lun;
 static u8   scsi_data[512];
 static uint scsi_len;
 static u32  scsi_ctx;
@@ -37,13 +38,26 @@ static scsi_request_sense request_sense;
  */
 void scsi_init(void)
 {
-	scsi_log = SCSI_LOG_SENSE;
+	scsi_log = SCSI_LOG_ERR | SCSI_LOG_SENSE;
+
+	/* Clear LUN */
+	memset(&scsi_lun, 0, sizeof(lun));
+
+	scsi_reset();
+
+	log_puts("SCSI: Initialized\n");
+}
+
+void scsi_reset(void)
+{
 	scsi_ctx = 0;
+
+	/* Initialize SENSE */
 	memset(&request_sense, 0, sizeof(scsi_request_sense));
 	request_sense.code = 0x70;
 	request_sense.length = 10;
 
-	log_puts("SCSI: Initialized\n");
+	log_puts("SCSI: Reset\n");
 }
 
 /**
@@ -104,7 +118,7 @@ int scsi_command(u8 *cb, uint len)
 err_illegal:
 	request_sense.key = 0x05; // Illegal Request
 	request_sense.asc = 0x20; // Invalid Command
-	return(-2);
+	return(-1);
 }
 
 /**
@@ -126,6 +140,22 @@ void scsi_complete(void)
 uint scsi_lun_count(void)
 {
 	return(1);
+}
+
+/**
+ * @brief Get access to one LUN strcture
+ *
+ * @param pos Identifier for the requested LUN
+ * @return lun* Pointer to the selected LUN structure (or NULL for error)
+ */
+lun *scsi_lun_get(int pos)
+{
+	lun *result = 0;
+
+	if (pos == 0)
+		result = &scsi_lun;
+
+	return(result);
 }
 
 /**
@@ -221,7 +251,7 @@ static inline int cmd6(u8 *cb, uint len)
 err_illegal:
 	request_sense.key = 0x05; // Illegal Request
 	request_sense.asc = 0x20; // Invalid Command
-	return(-2);
+	return(-1);
 }
 
 /**
@@ -233,7 +263,7 @@ err_illegal:
 static inline int cmd6_inquiry(u8 *cb, uint len)
 {
 	const u8 std[36] = {
-		0x00, 0x80, 0x02, 0x02, 32, 0x00, 0x00, 0x00,
+		0x00, 0x80, 0x02, 0x02, 32, 0x01, 0x00, 0x00,
 		/* T10 Vendor identification */
 		'A','G','I','L','A','C','K', ' ',
 		/* Product identification */
@@ -245,7 +275,7 @@ static inline int cmd6_inquiry(u8 *cb, uint len)
 	/* VPD 0x00 : Supported Vital Product Data pages */
 	const u8 pg00[] = {0, 0x00, 0x00,  3,  0,0x80,0x83};
 	/* VPD 0x80 : Unit Serial Number */
-	const u8 pg80[] = {0, 0x80, 0x00, 10,
+	const u8 pg80[] = {0, 0x80, 0x00, 16,
 		'7','0','B','3','D','5','4','C',
 		'E','8','0','1','0','0','0','0' };
 	/* VPD 0x83 : Device Identification */
@@ -303,7 +333,7 @@ err_invalid_field:
 	/* Additional sense : INVALID FIELD IN CDB */
 	request_sense.asc  = 0x24;
 	request_sense.ascq = 0x00;
-	return(-2);
+	return(-1);
 }
 
 /**
@@ -313,16 +343,51 @@ err_invalid_field:
  */
 static inline int cmd6_mode_sense(u8 *cb)
 {
+#ifdef SCSI_USE_CACHE
+	// Cache page
+	const u8 cache_page[] = {0x08, 0x12,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x00, 0x00};
+	// Control mode page
+	u8 ctrl_page[] = {0x0A, 0x0A,
+		0x00, 0x00, 0x08, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00};
+
+#endif
 	if (scsi_log & SCSI_LOG_SENSE)
 	{
 		log_print(LOG_INF, "%{SCSI: Mode Sense %} %8x %8x %8x %8x\n",
 		    LOG_YLW, cb[1], cb[2], cb[3], cb[4]);
 	}
+#ifdef SCSI_USE_CACHE
+	scsi_data[0] = 15;
+	scsi_data[1] =  0; // Medium type
+	scsi_data[2] =  0; // Specific parameter
+	scsi_data[3] =  0; // Block descriptor length
+	scsi_len = 4;
+	// Cache page
+	memcpy(scsi_data + scsi_len, cache_page, sizeof(cache_page));
+	scsi_len += sizeof(cache_page);
+	// Control mode page
+	if (scsi_lun.writable == 0)
+	{
+		scsi_data[2] |= 0x80;
+		ctrl_page[4] |= (1 << 3); // SWP
+	}
+	else
+		ctrl_page[4] &= (u8)~(1 << 3);
+	memcpy(scsi_data + scsi_len, ctrl_page, sizeof(ctrl_page));
+	scsi_len += sizeof(ctrl_page);
+	// Update block length
+	scsi_data[0] = (u8)scsi_len - 1;
+#else
 	scsi_data[0] = 0x03;
 	scsi_data[1] = 0; // Medium type
 	scsi_data[2] = 0; // Specific parameter
 	scsi_data[3] = 0; // Block descriptor length
 	scsi_len = 4;
+#endif
 	return(1);
 }
 
@@ -379,6 +444,11 @@ static inline int cmd6_request_sense(void)
 	return(1);
 }
 
+/**
+ * @brief The START/STOP UNIT control power and load or eject of the medium
+ *
+ * @param cb  Pointer to a byte array with received command
+ */
 static inline int cmd6_start_stop_unit(u8 *cb)
 {
 	if (scsi_log & SCSI_LOG_MEDIUM)
@@ -400,6 +470,14 @@ static inline int cmd6_test_ready(void)
 	if (scsi_log & SCSI_LOG_TEST_READY)
 		log_print(LOG_INF, "%{SCSI: Test Unit Ready%}\n", LOG_YLW);
 
+	if (scsi_lun.state == 0)
+	{
+		request_sense.key  = 0x02; // NOT READY
+		request_sense.asc  = 0x3A; // MEDIUM NOT PRESENT
+		request_sense.ascq = 0x00;
+		return(-3);
+	}
+
 	return(0);
 }
 
@@ -407,10 +485,10 @@ static inline int cmd6_test_ready(void)
 /* --                           CDB-10  Commands                           -- */
 /* -------------------------------------------------------------------------- */
 
-static inline int cmd10_read(u8 *cb, uint len);
+static inline int cmd10_read(lun *lun, u8 *cb, uint len);
 static inline int cmd10_read_capacity(void);
 static inline int cmd10_read_format_capacities(void);
-static inline int cmd10_write(u8 *cb, uint len);
+static inline int cmd10_write(lun *lun, u8 *cb, uint len);
 
 /**
  * @brief Decode and dispatch a CMD10 command to dedicated functions
@@ -433,9 +511,9 @@ static inline int cmd10(u8 *cb, uint len)
 		case SCSI_CMD10_READ_CAPACITY:
 			return( cmd10_read_capacity() );
 		case SCSI_CMD10_READ:
-			return( cmd10_read(cb, len) );
+			return( cmd10_read(&scsi_lun, cb, len) );
 		case SCSI_CMD10_WRITE:
-			return( cmd10_write(cb, len) );
+			return( cmd10_write(&scsi_lun, cb, len) );
 		default:
 			request_sense.key = 0x05; // Illegal Request
 			request_sense.asc = 0x20; // Invalid Command
@@ -446,10 +524,18 @@ static inline int cmd10(u8 *cb, uint len)
 err_illegal:
 	request_sense.key = 0x05; // Illegal Request
 	request_sense.asc = 0x20; // Invalid Command
-	return(-2);
+	return(-1);
 }
 
-static inline int cmd10_read(u8 *cb, uint len)
+/**
+ * @brief This command ask device to read data and transfer them
+ *
+ * @param lun Pointer to the LUN to use for this request
+ * @param cb  Pointer to the received packet structure
+ * @param len Length of the received packet
+ * @return integer Positive value on success, negative value on error
+ */
+static inline int cmd10_read(lun *lun, u8 *cb, uint len)
 {
 	u16 transfer_length;
 	u32 addr;
@@ -461,6 +547,10 @@ static inline int cmd10_read(u8 *cb, uint len)
 		u16 length;
 		u8  control;
 	} *pkt;
+
+	// Sanity check
+	if ((lun == 0) || (lun->rd == 0))
+		goto err_lun;
 
 	pkt = (struct packet *)cb;
 
@@ -477,13 +567,19 @@ static inline int cmd10_read(u8 *cb, uint len)
 	}
 
 	addr = (htonl(pkt->lba) + scsi_ctx) * 512;
-	mem_read(0, addr, 512, scsi_data);
-	scsi_len = 512;
+	scsi_len = (uint)lun->rd(addr, 512, scsi_data);
 
 	scsi_ctx++;
 	if (scsi_ctx < transfer_length)
 		return(2);
 	return(1);
+
+err_lun:
+	if (scsi_log & SCSI_LOG_ERR)
+		log_print(LOG_ERR, "SCSI: %{Read error, invalid LUN %32x%}\n", LOG_RED, lun->rd);
+	request_sense.key = 0x04; // Hardware error
+	request_sense.asc = 0x01; // No Index/Logical Block signal
+	return(-1);
 }
 
 static inline int cmd10_read_capacity(void)
@@ -499,7 +595,7 @@ static inline int cmd10_read_capacity(void)
 	rsp = (struct response *)&scsi_data;
 	scsi_len = sizeof(struct response);
 
-	rsp->lba          = htonl(16384); // 131072 blocks (64MB)
+	rsp->lba          = htonl(scsi_lun.capacity);
 	rsp->block_length = htonl(512);
 
 	return(1);
@@ -530,9 +626,8 @@ static inline int cmd10_read_format_capacities(void)
 	return(1);
 }
 
-static inline int cmd10_write(u8 *cb, uint len)
+static inline int cmd10_write(lun *lun, u8 *cb, uint len)
 {
-	mem_node *node = mem_get_node(0);
 	u16 transfer_length;
 	u32 addr;
 	struct __attribute__((packed)) packet {
@@ -543,6 +638,10 @@ static inline int cmd10_write(u8 *cb, uint len)
 		u16 length;
 		u8  control;
 	} *req;
+
+	// Sanity check
+	if (lun == 0)
+		goto err_lun;
 
 	(void)len;
 	req = (struct packet *)cb;
@@ -556,31 +655,68 @@ static inline int cmd10_write(u8 *cb, uint len)
 		log_print(LOG_INF, "%}\n");
 	}
 
+	/* Verify if LUN is writable ... or not */
+	if (scsi_lun.writable == 0)
+	{
+		log_print(LOG_WRN, "SCSI: Write protected\n");
+		request_sense.key  = 0x07; // Data protect
+		request_sense.asc  = 0x27; // Write protected
+		return(-3);
+	}
+
 	if (scsi_ctx == 0)
 	{
 		addr = htonl(req->lba) * 512;
-		mem_read(0, addr, 512, 0);
+		// If a preload function is defined for the LUN, call it
+		if (lun->wr_preload)
+		{
+			if( lun->wr_preload(addr) )
+				goto err_preload;
+		}
 	}
 	else if (scsi_ctx > 0)
 	{
 		addr = (htonl(req->lba) + scsi_ctx - 1) * 512;
-		if ((addr & 0xFFFFF000) != node->cache_addr)
-		{
-			if (scsi_log & SCSI_LOG_WRITE)
-				log_print(LOG_INF, "SCSI: Write, cache new page %32x\n", addr);
-			mem_write(0, 0, 0, 0);
-			mem_read(0, addr, 512, 0);
-		}
 		if (scsi_log & SCSI_LOG_WRITE)
 			log_print(LOG_INF, "SCSI: Write at %32x\n", addr);
-		memcpy(node->cache_buffer + (addr & 0xFFF), scsi_data, 512);
+		if (lun->wr)
+		{
+			if ( lun->wr(addr, 512, scsi_data) )
+				goto err_write;
+		}
 	}
 	scsi_len = 0;
 
 	scsi_ctx++;
 	if (scsi_ctx <= transfer_length)
 		return(3);
-	mem_write(0, 0, 0, 0);
+	// After last write, if a callback function is defined, call it
+	if (lun->wr_complete)
+	{
+		if ( lun->wr_complete() )
+			goto err_write;
+	}
 	return(0);
+
+err_write:
+	if (scsi_log & SCSI_LOG_ERR)
+		log_print(LOG_ERR, "SCSI: %{Write error at %32x%}\n", LOG_RED, addr);
+	request_sense.key = 0x03; // Medium error
+	request_sense.asc = 0x0C; // Write error
+	return(-1);
+
+err_preload:
+	if (scsi_log & SCSI_LOG_ERR)
+		log_print(LOG_ERR, "SCSI: %{Write error, preload rejected%}\n", LOG_RED);
+	request_sense.key = 0x03; // Medium error
+	request_sense.asc = 0x0C; // Write error
+	return(-1);
+
+err_lun:
+	if (scsi_log & SCSI_LOG_ERR)
+		log_print(LOG_ERR, "SCSI: %{Write error, invalid LUN%}\n", LOG_RED);
+	request_sense.key = 0x04; // Hardware error
+	request_sense.asc = 0x01; // No Index/Logical Block signal
+	return(-1);
 }
 /* EOF */
