@@ -13,6 +13,7 @@
  * program, see LICENSE.md file for more details.
  * This program is distributed WITHOUT ANY WARRANTY.
  */
+#include "app.h"
 #include "hardware.h"
 #include "libc.h"
 #include "log.h"
@@ -48,13 +49,20 @@ int main(void)
 	uart_init();
 	spi_init();
 	usb_init();
+
+	log_print(0, "--=={ Cowstick UMS }==--\r\n");
+
 	/* Initialize libraries */
 	log_init();
 	mem_init();
 	scsi_init();
 	usb_msc_init();
 
-	log_print(0, "--=={ Cowstick UMS }==--\r\n");
+	/* Initialize and start custom app (if any) */
+	app_init();
+
+	/* Insert an empry log line after end of inits */
+	log_print(LOG_INF, "\n");
 
 	mem_detect();
 	for (i = 0; i < MEM_NODE_COUNT; i++)
@@ -88,7 +96,7 @@ int main(void)
 	tm = time_now(0);
 	tm_ref = tm;
 
-	/* LED blink infinite loop */
+	/* Main firmware loop */
 	while(1)
 	{
 		usb_periodic();
@@ -105,6 +113,8 @@ int main(void)
 				scsi_lun->writable = 1;
 			}
 		}
+
+		app_periodic();
 
 		/* Blink led1 */
 		if (time_since(tm) > 400)

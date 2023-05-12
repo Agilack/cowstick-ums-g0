@@ -13,30 +13,25 @@
  # program, see LICENSE.md file for more details.
  # This program is distributed WITHOUT ANY WARRANTY.
 ##
-TARGET   ?= firmware
+TARGET   ?= app-default
 CROSS    ?= arm-none-eabi-
 BUILDDIR ?= build
 
-SRC  = main.c hardware.c log.c uart.c spi.c time.c usb.c
-SRC += app.c
-SRC += scsi.c usb_msc.c
-SRC += libc.c mem.c
-ASRC = startup.s libasm.s api.s
+SRC  = main.c
+ASRC = startup.s libasm.s
 
-CC = $(CROSS)gcc
-OC = $(CROSS)objcopy
-OD = $(CROSS)objdump
+CC  = $(CROSS)gcc
+OC  = $(CROSS)objcopy
+OD  = $(CROSS)objdump
 GDB = $(CROSS)gdb
-OCD = openocd
 
 CFLAGS  = -mcpu=cortex-m0plus -mthumb
 CFLAGS += -nostdlib -Os -ffunction-sections
 CFLAGS += -fno-builtin-memset -fno-builtin-memcpy
 CFLAGS += -Wall -Wextra -Wconversion -pedantic
-CFLAGS += -g -DUART_FIFO_SW
-#CFLAGS += -DUSB_DEBUG
+CFLAGS += -g
 
-LDFLAGS = -nostartfiles -T src/cowstick-ums.ld -Wl,-Map=$(TARGET).map,--cref,--gc-sections -static
+LDFLAGS = -nostartfiles -T src/cowstick-ums-app.ld -Wl,-Map=$(TARGET).map,--cref,--gc-sections -static
 
 COBJ = $(patsubst %.c, $(BUILDDIR)/%.o, $(SRC))
 AOBJ = $(patsubst %.s, $(BUILDDIR)/%.o, $(ASRC))
@@ -73,17 +68,9 @@ $(COBJ) : $(BUILDDIR)/%.o: src/%.c
 
 $(TARGET).bin:
 	@echo ""
-	@echo "firmware.bin now available, please compile firmware first"
+	@echo "${TARGET}.bin now available, please compile firmware first"
 	@echo ""
 	@false
 
-openocd:
-	$(OCD) -f scripts/openocd.cfg
-
 debug:
-	$(GDB) --command=scripts/gdb.cfg $(TARGET).elf
-
-load: $(TARGET).bin
-	$(OCD) -f scripts/openocd.cfg -c "mem_load ./$(TARGET).bin"
-reboot: $(TARGET).bin
-	$(OCD) -f scripts/openocd.cfg -c "mcu_reboot"
+	$(GDB) $(TARGET).elf

@@ -19,8 +19,8 @@
 
 /* -- Stack and Head sections ---------------------------------------------- */
     .section .stack
-    .align 3
-    .equ    Stack_Size, 0x2000
+    .align 2
+    .equ    Stack_Size, 0x1FFC
     .globl    __StackTop
     .globl    __StackLimit
 __StackLimit:
@@ -36,7 +36,7 @@ __StackTop:
     .globl __isr_vector
 __isr_vector:
     /* Cortex M0 Handlers */
-    .long   __StackTop                  /* Top of Stack                       */
+    .long   _estack                     /* Top of Stack                       */
     .long   Reset_Handler               /* Reset Handler                      */
     .long   NMI_Handler                 /* NMI Handler                        */
     .long   HardFault_Handler           /* Hard Fault Handler                 */

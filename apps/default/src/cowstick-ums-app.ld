@@ -18,9 +18,8 @@ SEARCH_DIR(.)
 /* Memory Spaces Definitions */
 MEMORY
 {
-  rom       (rx)  : ORIGIN = 0x08000000, LENGTH = 0x00040000
-  ram       (rwx) : ORIGIN = 0x20000000, LENGTH = 0x0000E000
-  ram_stack (rw)  : ORIGIN = 0x2000E000, LENGTH = 0x2000
+  rom      (rx)  : ORIGIN = 0x08010000, LENGTH = 0x00010000
+  ram      (rwx) : ORIGIN = 0x20010000, LENGTH = 0x00010000
 }
 
 /* Section Definitions */
@@ -30,9 +29,7 @@ SECTIONS
     {
         . = ALIGN(4);
         _sfixed = .;
-        KEEP(*(.isr_vector))
-        KEEP(*(.fw_version))
-	KEEP(*(.api .api.*))
+        KEEP(*(.app_vector))
         *(.text .text.* .gnu.linkonce.t.*)
         *(.glue_7t) *(.glue_7)
         *(.rodata .rodata* .gnu.linkonce.r.*)
@@ -110,16 +107,6 @@ SECTIONS
         _ebss = . ;
         _ezero = .;
     } > ram
-
-    /* stack section */
-    .stack (NOLOAD):
-    {
-        . = ALIGN(4);
-        _sstack = .;
-	*(.stack .stack.*)
-        . = ALIGN(4);
-        _estack = .;
-    } > ram_stack = 0x55
 
     . = ALIGN(4);
     _end = . ;

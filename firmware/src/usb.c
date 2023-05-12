@@ -13,6 +13,7 @@
  * program, see LICENSE.md file for more details.
  * This program is distributed WITHOUT ANY WARRANTY.
  */
+#include "app.h"
 #include "libc.h"
 #include "types.h"
 #include "uart.h"
@@ -1164,6 +1165,8 @@ void USB_Handler(void)
 			if (if_drv[i].reset != 0)
 				if_drv[i].reset();
 		}
+		/* Call custom app reset handler */
+		app_reset();
 
 		isr_ack = (1 << 10);
 		isr_ack |= ((1 << 11) | (1 << 8));
