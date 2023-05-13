@@ -26,10 +26,10 @@ api_index:
 	.long time_tbl
 	.long log_tbl
 
+	.long mem_tbl
+	.long msc_scsi_tbl
+	.long 0
 	.long 0 /* Reserved for  generic USB functions */
-	.long 0 /* Reserved for USB mass storage */
-	.long 0 /* Reserved for SCSI */
-	.long 0 
 
 	.long 0
 	.long 0 /* Rfu Flash */
@@ -75,3 +75,17 @@ log_tbl:
 	.long log_puthex
 	.long log_dump
 	.long log_print
+
+/* Table of memory abstraction layer functions */
+mem_tbl:
+	.long mem_get_node
+	.long mem_read
+	.long mem_write
+	.long mem_erase
+
+/* Table of SCSI over MSC functions */
+msc_scsi_tbl:
+	.long scsi_lun_get
+	.long 0
+	.long 0
+	.long 0

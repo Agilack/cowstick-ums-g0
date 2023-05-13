@@ -31,14 +31,17 @@
 #define SCSI_CMD10_WRITE         0x2A
 
 #define SCSI_LOG_ERR        (1 << 0)
-#define SCSI_LOG_TEST_READY (1 << 1)
-#define SCSI_LOG_SENSE      (1 << 2)
+#define SCSI_LOG_WRN        (1 << 1)
+#define SCSI_LOG_INF        (1 << 2)
+#define SCSI_LOG_DBG        (1 << 3)
+#define SCSI_LOG_TEST_READY (1 << 4)
+#define SCSI_LOG_SENSE      (1 << 5)
 #define SCSI_LOG_READ       (1 << 8)
 #define SCSI_LOG_WRITE      (1 << 9)
 #define SCSI_LOG_CAPACITY   (1 << 12)
 #define SCSI_LOG_MEDIUM     (1 << 15)
 
-typedef struct
+typedef struct lun_s
 {
 	uint state;
 	uint capacity; // Number of 512 bytes sectors
@@ -48,6 +51,8 @@ typedef struct
 	int  (*wr)(u32 addr, u32 len, u8 *data);
 	int  (*wr_complete)(void);
 	int  (*wr_preload)(u32 addr);
+	/* LUN vendor extension */
+	int  (*cmd_vendor)(struct lun_s *unit, u32 *ctx, u8 *cb, uint len);
 } lun;
 
 typedef struct __attribute__((packed))

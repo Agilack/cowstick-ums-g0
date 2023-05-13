@@ -19,6 +19,7 @@
 #include "scsi.h"
 #include "types.h"
 
+static inline int cmd0_vendor(lun *unit, u8 *cb, uint len);
 static inline int cmd6(u8 *cb, uint len);
 static inline int cmd10(u8 *cb, uint len);
 
@@ -106,8 +107,8 @@ int scsi_command(u8 *cb, uint len)
 		// If packet contains a vendor specific CBD command
 		case 6:
 		case 7:
-			log_puts("SCSI: CBD-Vendor commands not supported yet\n");
-			goto err_illegal;
+			result = cmd0_vendor(&scsi_lun, cb, len);
+			break;
 		default:
 			log_puts("SCSI: Unknown CBD format\n");
 			goto err_illegal;
@@ -201,6 +202,34 @@ u8 *scsi_set_data(u8 *data, uint *len)
 /* --                                                                      -- */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * @brief Decode and process a VENDOR command
+ *
+ * This function is called by the scsi_command when the received CDB contains a
+ * vendor specific command (group 6 or group 7). There is no vendor command
+ * directly available into scsi layer, a lun extension is used.
+ *
+ * @return integer Result returned by dedicated function (-1 if unsupported)
+ */
+static inline int cmd0_vendor(lun *unit, u8 *cb, uint len)
+{
+	int result = -1;
+
+	// Sanity check
+	if ((len < 1) || (unit == 0))
+		return(-1);
+
+	if (scsi_log & SCSI_LOG_DBG)
+	{
+		log_print(LOG_INF, "SCSI: %{Vendor debug %8x data_len=%d%}\n",
+		    LOG_YLW, cb[0], scsi_len);
+	}
+
+	if (unit->cmd_vendor)
+		result = unit->cmd_vendor(unit, &scsi_ctx, cb, len);
+
+	return(result);
+}
 
 /* -------------------------------------------------------------------------- */
 /* --                            CDB-6 Commands                            -- */
