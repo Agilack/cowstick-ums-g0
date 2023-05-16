@@ -6,7 +6,7 @@ device. It is *not* desined for very large storage capacity or high throughput
 but offer a simple solution to create a storage device with custom features.
 This device is part of cowstick boards family.
 
-![Picture of rev1](hardware/doc/rev1-case.jpg)
+![Picture of rev2](hardware/doc/rev2-case.jpg)
 
 CAD sources
 -----------
@@ -16,7 +16,7 @@ This board has been designed using KiCad EDA (version 6). All sources files
 
 <table>
 <tr>
-<td><img src="hardware/doc/kicad-sch-preview.png"     alt="KiCad schematics"/></td>
+<td><img src="hardware/doc/kicad-sch-preview.jpg"     alt="KiCad schematics"/></td>
 <td><img src="hardware/doc/kicad-routing-preview.png" alt="KiCad routing"/></td>
 </tr><tr>
 <td>Fig1: Preview of the KiCad schematics</td>
@@ -27,7 +27,7 @@ This board has been designed using KiCad EDA (version 6). All sources files
 License
 -------
 
-This project is OpenHardware. The hardware stugg is published under terms of
-the Creative Commons ShareAlike license (CC-by-SA) see hardware/License.md.
+This project is OpenHardware. The hardware stuff is published under terms of
+the Creative Commons ShareAlike license (CC-by-SA) see [hardware/License.md](hardware/License.md).
 The embedded firmware is published under terms of the GNU Lesser General Public
-License (LGPL) version 3 see firmware/License.md.
+License (LGPL) version 3 see [firmware/License.md](firmware/License.md).
