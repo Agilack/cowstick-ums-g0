@@ -22,6 +22,7 @@ typedef struct lun_s
 	uint state;
 	uint capacity; // Number of 512 bytes sectors
 	uint writable;
+	uint perm;     // Permission mask
 	/* LUN functions */
 	int  (*rd)(u32 addr, u32 len, u8 *data);
 	int  (*wr)(u32 addr, u32 len, u8 *data);

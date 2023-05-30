@@ -95,6 +95,21 @@ int atoi(char *s)
 }
 
 /**
+ * @brief Generic function to convert a 24bits value to network byte order
+ *
+ * @param v Long integer with bytes in CPU order
+ * @return  Long integer with bytes in network order
+ */
+u32 hton3(u32 v)
+{
+	u32 vout;
+	vout  = ((v & 0x0000FF) << 16);
+	vout |= ((v & 0x00FF00)      );
+	vout |= ((v & 0xFF0000) >> 16);
+	return(vout);
+}
+
+/**
  * @brief Generic function to convert a long value to network byte order
  *
  * @param v Long integer with bytes in CPU order

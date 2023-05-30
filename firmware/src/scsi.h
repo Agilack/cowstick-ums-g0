@@ -18,6 +18,7 @@
 #include "types.h"
 
 #define SCSI_USE_CACHE
+#define SCSI_USE_RW_BUFFER /* Allo READ_BUFFER and WRITE_BUFFER commands */
 
 #define SCSI_CMD6_TEST_READY       0x00
 #define SCSI_CMD6_REQUEST_SENSE    0x03
@@ -29,6 +30,8 @@
 #define SCSI_CMD10_READ_CAPACITY 0x25
 #define SCSI_CMD10_READ          0x28
 #define SCSI_CMD10_WRITE         0x2A
+#define SCSI_CMD10_WRITE_BUFFER  0x3B
+#define SCSI_CMD10_READ_BUFFER   0x3C
 
 #define SCSI_LOG_ERR        (1 << 0)
 #define SCSI_LOG_WRN        (1 << 1)
@@ -41,11 +44,15 @@
 #define SCSI_LOG_CAPACITY   (1 << 12)
 #define SCSI_LOG_MEDIUM     (1 << 15)
 
+#define SCSI_PERM_RDBUFFER (1 << 28)
+#define SCSI_PERM_WRBUFFER (1 << 29)
+
 typedef struct lun_s
 {
 	uint state;
 	uint capacity; // Number of 512 bytes sectors
 	uint writable;
+	uint perm;     // Permission mask
 	/* LUN functions */
 	int  (*rd)(u32 addr, u32 len, u8 *data);
 	int  (*wr)(u32 addr, u32 len, u8 *data);

@@ -21,6 +21,7 @@ void *memcpy (void *dst, const void *src, int n);
 void *memset (void *dst, int value, int n);
 
 int   atoi(char *s);
+unsigned long  hton3(unsigned long  v);
 unsigned long  htonl(unsigned long  v);
 unsigned short htons(unsigned short v);
 int   itoa(char *d, uint n, int pad, int zero);

@@ -18,7 +18,7 @@
 #include "scsi.h"
 #include "time.h"
 
-#define SCSI_DEBUG_READ
+#undef SCSI_DEBUG_READ
 
 #define API_BASE 0x080000D0
 
