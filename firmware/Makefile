@@ -18,6 +18,7 @@ CROSS    ?= arm-none-eabi-
 BUILDDIR ?= build
 
 SRC  = main.c hardware.c log.c uart.c spi.c time.c usb.c
+SRC += driver/flash_mcu.c
 SRC += app.c
 SRC += scsi.c usb_msc.c
 SRC += libc.c mem.c
@@ -33,6 +34,7 @@ CFLAGS  = -mcpu=cortex-m0plus -mthumb
 CFLAGS += -nostdlib -Os -ffunction-sections
 CFLAGS += -fno-builtin-memset -fno-builtin-memcpy
 CFLAGS += -Wall -Wextra -Wconversion -pedantic
+CFLAGS += -Isrc
 CFLAGS += -g -DUART_FIFO_SW
 #CFLAGS += -DUSB_DEBUG
 
@@ -62,6 +64,7 @@ clean:
 $(BUILDDIR):
 	@echo "  [MKDIR] $@"
 	@mkdir -p $(BUILDDIR)
+	@mkdir -p $(BUILDDIR)/driver
 
 $(AOBJ) : $(BUILDDIR)/%.o : src/%.s
 	@echo "  [AS] $@"

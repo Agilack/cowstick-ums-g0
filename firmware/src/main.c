@@ -24,8 +24,10 @@
 #include "uart.h"
 #include "usb.h"
 #include "usb_msc.h"
+#include "driver/flash_mcu.h"
 
 void test_mem(void);
+void test_flash_mcu(void);
 
 /**
  * @brief Entry point of the C code
@@ -52,6 +54,9 @@ int main(void)
 	scsi_init();
 	usb_msc_init();
 
+#ifdef TEST_FLASH_MCU
+	test_flash_mcu();
+#endif
 	/* Initialize and start custom app (if any) */
 	app_init();
 
@@ -140,6 +145,61 @@ void test_mem(void)
 	    (uint)mem_read(0, 0x000000, 512, 0) );
 	log_dump(node->cache_buffer, 64, 2);
 	while(1);
+}
+#endif
+
+#ifdef TEST_FLASH_MCU
+void test_flash_mcu(void)
+{
+	u8 buffer[256];
+	u32 addr, v;
+	int i;
+
+	log_print(LOG_DBG, "Test: Dump initial flash content (bank2) :\n");
+	log_dump((u8 *)0x08020000, 64, 1);
+
+	log_print(LOG_DBG, "\nTest: Erase first page of bank2 ...\n");
+	flash_mcu_erase(0x08020000);
+	for (addr = 0x08020000; addr < 0x08020800; addr += 4)
+	{
+		v = *(u32 *)addr;
+		if (v != 0xFFFFFFFF)
+		{
+			log_print(LOG_DBG, "Test: %{Erase failed%} at %32x readed %32x\n", 1, addr, v);
+			break;
+		}
+	}
+	if (addr == 0x08020800)
+		log_print(LOG_DBG, "Test: Page erase %{success%}\n", 2);
+
+	log_print(LOG_DBG, "\nTest: Write content to page\n");
+	// Prepare bufffer with values
+	for (i = 0; i < 0xFF; i++)
+		buffer[i] = (u8)(i & 0xFF);
+	// Write this test pattern to the whole page
+	for (addr = 0x08020000; addr < 0x08020800; addr += 256)
+		flash_mcu_write(addr, buffer, 256);
+	// Try to read back and verify
+	for (addr = 0x08020000; addr < 0x08020800; addr++)
+	{
+		v = *(u8 *)addr;
+		if (v != (addr & 0xFF))
+		{
+			log_print(LOG_DBG, "Test: %{Write failed%} at %32x : expected %8x but readed %8x\n", 1, addr, (addr & 0xFF), v);
+			break;
+		}
+	}
+	if (addr == 0x08020800)
+		log_print(LOG_DBG, "Test: Page erase %{success%}\n", 2);
+
+	log_print(LOG_DBG, "\nTest: Dump initial flash content (bank1) :\n");
+	log_dump((u8 *)0x08010000, 512, 1);
+
+	//flash_mcu_erase(0x08010000);
+	//flash_mcu_erase(0x0801F800);
+	//flash_mcu_erase(0x0803F800);
+	//while(1);
+	uart_flush();
 }
 #endif
 /* EOF */
