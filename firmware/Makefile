@@ -20,7 +20,7 @@ BUILDDIR ?= build
 SRC  = main.c hardware.c log.c uart.c spi.c time.c usb.c
 SRC += driver/flash_mcu.c
 SRC += app.c
-SRC += scsi.c usb_msc.c
+SRC += scsi.c scsi_rw_buffer.c usb_msc.c
 SRC += libc.c mem.c
 ASRC = startup.s libasm.s api.s
 
@@ -86,7 +86,9 @@ openocd:
 debug:
 	$(GDB) --command=scripts/gdb.cfg $(TARGET).elf
 
-load: $(TARGET).bin
+load:
+	$(GDB) --command=scripts/gdb_load.cfg $(TARGET).elf
+load_ocd: $(TARGET).bin
 	$(OCD) -f scripts/openocd.cfg -c "mem_load ./$(TARGET).bin"
 reboot: $(TARGET).bin
 	$(OCD) -f scripts/openocd.cfg -c "mcu_reboot"

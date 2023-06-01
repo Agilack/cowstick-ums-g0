@@ -17,20 +17,18 @@
 #include "log.h"
 #include "mem.h"
 #include "scsi.h"
+#include "scsi_rw_buffer.h"
 #include "types.h"
 
 static inline int cmd0_vendor(lun *unit, u8 *cb, uint len);
 static inline int cmd6(u8 *cb, uint len);
-static inline int cmd10(u8 *cb, uint len);
+static inline int cmd10(lun *unit, scsi_context *ctx);
 
 static lun  scsi_lun;
 static u8   scsi_data[512];
 static uint scsi_len;
 static u32  scsi_ctx;
 static u32  scsi_log;
-#ifdef SCSI_USE_RW_BUFFER
-static u8   scsi_echo[1024];
-#endif
 
 static scsi_request_sense request_sense;
 
@@ -81,6 +79,7 @@ void scsi_reset(void)
  */
 int scsi_command(u8 *cb, uint len)
 {
+	scsi_context context;
 	int result = -1;
 	u8  group;
 
@@ -89,6 +88,14 @@ int scsi_command(u8 *cb, uint len)
 		return(-1);
 
 	group = ((cb[0] >> 5) & 7);
+
+	// Initialize transaction context structure
+	context.cb = cb;
+	context.cb_len  = len;
+	context.io_data = scsi_data;
+	context.io_len  = scsi_len;
+	context.flags   = scsi_ctx;
+	context.sense   = &request_sense;
 
 	switch(group)
 	{
@@ -99,7 +106,7 @@ int scsi_command(u8 *cb, uint len)
 		// If packet contains a 10-bytes CBD command
 		case 1:
 		case 2:
-			result = cmd10(cb, len);
+			result = cmd10(&scsi_lun, &context);
 			break;
 		// If packet contains a 16-bytes CBD command
 		case 4:
@@ -523,10 +530,6 @@ static inline int cmd10_read(lun *lun, u8 *cb, uint len);
 static inline int cmd10_read_capacity(void);
 static inline int cmd10_read_format_capacities(void);
 static inline int cmd10_write(lun *lun, u8 *cb, uint len);
-#ifdef SCSI_USE_RW_BUFFER
-static inline int cmd10_read_buffer(lun *lun, u8 *cb, uint len);
-static inline int cmd10_write_buffer(lun *lun, u8 *cb, uint len);
-#endif
 
 /**
  * @brief Decode and dispatch a CMD10 command to dedicated functions
@@ -537,31 +540,41 @@ static inline int cmd10_write_buffer(lun *lun, u8 *cb, uint len);
  *
  * @return integer Result returned by dedicated functions (-1 if unsupported)
  */
-static inline int cmd10(u8 *cb, uint len)
+static inline int cmd10(lun *unit, scsi_context *ctx)
 {
-	if (len < 10)
+	int result;
+
+	(void)unit;
+
+	if ((ctx == 0) || (ctx->cb_len < 10))
 		goto err_illegal;
 
-	switch(cb[0])
+	switch(ctx->cb[0])
 	{
 		case SCSI_CMD10_READ_FORMAT_CAPACITIES:
 			return( cmd10_read_format_capacities() );
 		case SCSI_CMD10_READ_CAPACITY:
 			return( cmd10_read_capacity() );
 		case SCSI_CMD10_READ:
-			return( cmd10_read(&scsi_lun, cb, len) );
+			return( cmd10_read(&scsi_lun, ctx->cb, ctx->cb_len) );
 		case SCSI_CMD10_WRITE:
-			return( cmd10_write(&scsi_lun, cb, len) );
+			return( cmd10_write(&scsi_lun, ctx->cb, ctx->cb_len) );
 #ifdef SCSI_USE_RW_BUFFER
 		case SCSI_CMD10_READ_BUFFER:
-			return( cmd10_read_buffer(&scsi_lun, cb, len) ) ;
+			result = cmd10_read_buffer(&scsi_lun, ctx);
+			scsi_len = ctx->io_len;
+			scsi_ctx = ctx->flags;
+			return(result);
 		case SCSI_CMD10_WRITE_BUFFER:
-			return( cmd10_write_buffer(&scsi_lun, cb, len) );
+			result = cmd10_write_buffer(&scsi_lun, ctx);
+			scsi_len = ctx->io_len;
+			scsi_ctx = ctx->flags;
+			return(result);
 #endif
 		default:
 			request_sense.key = 0x05; // Illegal Request
 			request_sense.asc = 0x20; // Invalid Command
-			log_print(LOG_WRN, "SCSI: Unknown CMD10 %8x\n", cb[0]);
+			log_print(LOG_WRN, "SCSI: Unknown CMD10 %8x\n", ctx->cb[0]);
 	}
 	return(-1);
 
@@ -627,119 +640,6 @@ err_lun:
 }
 
 
-#ifdef SCSI_USE_RW_BUFFER
-/**
- * @brief Diagnostic function used by host to read device memory
- *
- * @param lun Pointer to the LUN to use for this request
- * @param cb  Pointer to the received packet structure
- * @param len Length of the received packet
- * @return integer Positive value on success, negative value on error
- */
-static inline int cmd10_read_buffer(lun *lun, u8 *cb, uint len)
-{
-	struct __attribute__((packed)) request {
-		unsigned opcode    :  8;
-		unsigned mode      :  8;
-		unsigned buffer_id :  8;
-		unsigned offset    : 24;
-		unsigned length    : 24;
-		unsigned control   :  8;
-	} *req;
-	struct __attribute__((packed)) rsp_descriptor {
-		unsigned offset_boundary :  8;
-		unsigned buffer_capacity : 24;
-	} *rsp;
-
-	// Sanity check
-	if ((cb == 0) || (len != 10))
-		goto err;
-
-	// Test if READ BUFFER is allowed by permission mask
-	if ((lun->perm & SCSI_PERM_RDBUFFER) == 0)
-		goto err_perm;
-
-	req = (struct request *)cb;
-
-	log_print(LOG_DBG, "SCSI: READ_BUFFER, mode=%8x id=%8x offset=%24x length=%d\n", req->mode, req->buffer_id, hton3(req->offset), hton3(req->length));
-
-	// Data mode : read only buffer data
-	if (req->mode == 2)
-	{
-		u32 addr, end;
-		// Determine address to read according to buffer id
-		if (req->buffer_id == 0)
-			addr = 0x08010000;
-		else if (req->buffer_id == 1)
-			addr = 0x20010000;
-		else
-			goto err_buffer_id;
-
-		addr += hton3(req->offset);
-		end = addr + hton3(req->length);
-
-		scsi_len = hton3(req->length);
-		if (scsi_len > 512)
-			scsi_len = 512;
-		memcpy(scsi_data, (const void *)addr, (int)scsi_len);
-	}
-	// Descriptor mode : read only header of buffer descriptor
-	else if (req->mode == 3)
-	{
-		rsp = (struct rsp_descriptor *)&scsi_data;
-		rsp->offset_boundary = 2; // Four bytes boundary (2^2)
-		if (req->buffer_id == 0)
-			rsp->buffer_capacity = (64 * 1024);
-		else if (req->buffer_id == 1)
-			rsp->buffer_capacity = (64 * 1024) - 0x2000;
-		else
-			goto err_buffer_id;
-		return(1);
-	}
-	// Descriptor mode : Echo buffer
-	else if (req->mode == 0x0A)
-	{
-		u32 addr;
-		// Extract buffer offset and read size from request
-		addr = hton3(req->offset);
-		scsi_len = hton3(req->length);
-		if (scsi_len > 512)
-			scsi_len = 512;
-		// Test if request is valid
-		if ((addr + scsi_len) > 1024)
-			goto err_overflow;
-		log_print(LOG_DBG, "SCSI: Read echo buffer offset=%x len=%d\n", addr, scsi_len);
-		addr = (u32)&scsi_echo + addr;
-		memcpy(scsi_data, (const void *)addr, (int)scsi_len);
-	}
-	else
-	{
-		request_sense.key  = 0x05; // ILLEGAL REQUEST
-		request_sense.asc  = 0x24; // INVALID FIELD IN CDB
-		request_sense.ascq = 0x00;
-		return(-3);
-	}
-	return(1);
-
-// Invalid buffer id specified
-err_buffer_id:
-// Invalid address, offset or data length
-err_overflow:
-// Permission error: read buffer not allowed
-err_perm:
-	request_sense.key  = 0x05; // ILLEGAL REQUEST
-	request_sense.asc  = 0x24; // INVALID FIELD IN CDB
-	request_sense.ascq = 0x00;
-	return(-3);
-
-// Internal error (!)
-err:
-	request_sense.key = 0x04; // Hardware error
-	request_sense.asc = 0x00; // No additional sense information
-	request_sense.ascq = 0x00;
-	return(-3);
-}
-#endif
 
 static inline int cmd10_read_capacity(void)
 {
@@ -878,85 +778,4 @@ err_lun:
 	request_sense.asc = 0x01; // No Index/Logical Block signal
 	return(-1);
 }
-
-#ifdef SCSI_USE_RW_BUFFER
-/**
- * @brief Diagnostic function used to download firware and modify device memory
- *
- * @param lun Pointer to the LUN to use for this request
- * @param cb  Pointer to the received packet structure
- * @param len Length of the received packet
- * @return integer Positive value on success, negative value on error
- */
-static inline int cmd10_write_buffer(lun *lun, u8 *cb, uint len)
-{
-	struct __attribute__((packed)) request {
-		unsigned opcode    :  8;
-		unsigned mode      :  8;
-		unsigned buffer_id :  8;
-		unsigned offset    : 24;
-		unsigned params    : 24;
-		unsigned control   :  8;
-	} *req;
-
-	// Sanity check
-	if ((cb == 0) || (len != 10))
-		goto err;
-
-	// Test if WRITE BUFFER is allowed by permission mask
-	if ((lun->perm & SCSI_PERM_WRBUFFER) == 0)
-		goto err_perm;
-
-	req = (struct request *)cb;
-
-	// On first call, it is the request (no data yet)
-	if (scsi_ctx == 0)
-	{
-		log_print(LOG_DBG, "SCSI: Write buffer request mode=%d offset=%32x params=%32x\n", req->mode, req->offset, hton3(req->params));
-		if (req->mode != 0x0A)
-			goto err_mode;
-		scsi_ctx++;
-		scsi_len = 0;
-		return(3);
-	}
-	// On other calls, data phase
-	else
-	{
-		u32  addr;
-		uint len;
-		log_print(LOG_DBG, "SCSI: Write buffer data len=%d\n", scsi_len);
-		addr = (scsi_ctx - 1);
-		if (addr < 1024)
-		{
-			// Compute maximum write length
-			len = 1024 - addr;
-			if (scsi_len < len)
-				len = scsi_len;
-			addr = (u32)&scsi_echo + addr;
-			memcpy((void *)addr, scsi_data, (int)len);
-		}
-		scsi_ctx += scsi_len;
-		scsi_len = 0;
-		if (scsi_ctx < hton3(req->params))
-			return(3);
-	}
-
-	return(0);
-
-err_mode:
-// Permission error: write buffer not allowed
-err_perm:
-	request_sense.key  = 0x05; // ILLEGAL REQUEST
-	request_sense.asc  = 0x24; // INVALID FIELD IN CDB
-	request_sense.ascq = 0x00;
-	return(-3);
-
-// Internal error (!)
-err:
-	request_sense.key  = 0x04; // Hardware error
-	request_sense.asc  = 0x00; // No additional sense information
-	request_sense.ascq = 0x00;
-	return(-3);
-}
-#endif
 /* EOF */

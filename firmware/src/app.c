@@ -29,6 +29,7 @@ static int  is_fct_valid(u32 addr);
 static void default_init(void);
 static void default_periodic(void);
 static void default_reset(void);
+static void dummy_periodic(void);
 
 /**
  * @brief Initialize cutom app
@@ -91,6 +92,29 @@ void app_init(void)
 }
 
 /**
+ * @brief Stop the custom app and desactivate default LUN
+ *
+ */
+int app_stop(void)
+{
+	lun *scsi_lun;
+
+	app_periodic = dummy_periodic;
+
+	/* Disable default SCSI LUN */
+	scsi_lun = scsi_lun_get(0);
+	scsi_lun->state = 0;
+	scsi_lun->rd    = 0;
+	scsi_lun->wr    = 0;
+	scsi_lun->wr_complete = 0;
+	scsi_lun->wr_preload  = 0;
+
+	log_print(LOG_WRN, "App: Custom application is stop stopped\n");
+
+	return(0);
+}
+
+/**
  * @brief Test if an address can be valid for a function
  *
  * @param addr Tested address
@@ -145,8 +169,8 @@ static void default_init(void)
 /**
  * @brief Default periodic handler
  *
- * This dummy function can be used as periodic handler when there is no
- * custom app or when the custom app does not contains a periodic handler.
+ * This function can be used as periodic handler when there is no custom
+ * app or when the custom app does not contains a periodic handler.
  */
 static void default_periodic(void)
 {
@@ -176,6 +200,18 @@ static void default_periodic(void)
 static void default_reset(void)
 {
 	/* Do nothing */
+}
+
+/**
+ * @brief Empty periodic handler
+ *
+ * This function is used as periodic handler when the custom app has been
+ * stopped (see app_stop). This can be usefull (for example) during firmware
+ * upgrade.
+ */
+static void dummy_periodic(void)
+{
+	/* Do Nothing */
 }
 
 /* -------------------------------------------------------------------------- */

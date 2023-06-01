@@ -1,0 +1,12 @@
+# Ignore build directory and all intermediate ".o" files
+build
+*.o
+
+# Ignore firmware files
+*.elf
+*.bin
+*.dis
+*.map
+
+# Ignore ide / editor files
+*~

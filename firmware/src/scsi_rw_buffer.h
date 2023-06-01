@@ -1,6 +1,6 @@
 /**
- * @file  app.h
- * @brief Definitions and prototypes for custom application interface
+ * @file  scsi_rw_buffer.h
+ * @brief Headers and definitions for SCSI READ_BUFFER and WRITE_BUFFER
  *
  * @author Saint-Genest Gwenael <gwen@cowlab.fr>
  * @copyright Agilack (c) 2023
@@ -13,14 +13,14 @@
  * program, see LICENSE.md file for more details.
  * This program is distributed WITHOUT ANY WARRANTY.
  */
-#ifndef APP_H
-#define APP_H
+#ifndef SCSI_RW_BUFFER_H
+#define SCSI_RW_BUFFER_H
+#include "scsi.h"
+#include "types.h"
 
-void app_init(void);
-int  app_stop(void);
-
-extern void (*app_periodic)(void);
-extern void (*app_reset)(void);
+#ifdef SCSI_USE_RW_BUFFER
+int cmd10_read_buffer (lun *lun, scsi_context *ctx);
+int cmd10_write_buffer(lun *lun, scsi_context *ctx);
+#endif
 
 #endif
-/* EOF */

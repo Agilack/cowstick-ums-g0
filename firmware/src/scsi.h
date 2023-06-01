@@ -18,7 +18,10 @@
 #include "types.h"
 
 #define SCSI_USE_CACHE
-#define SCSI_USE_RW_BUFFER /* Allo READ_BUFFER and WRITE_BUFFER commands */
+#define SCSI_USE_RW_BUFFER /* Allow READ_BUFFER and WRITE_BUFFER commands */
+#define SCSI_SANITY_EXTRA  /* Activate more sanity checks */
+
+#define SCSI_BUFFER_SZ 512
 
 #define SCSI_CMD6_TEST_READY       0x00
 #define SCSI_CMD6_REQUEST_SENSE    0x03
@@ -75,6 +78,19 @@ typedef struct __attribute__((packed))
 	uint fruc     :  8; // Field replaceable unit code
 	uint spec_key : 24; // Sense specific key
 } scsi_request_sense;
+
+typedef struct scsi_context_s
+{
+	// Command Descriptor Block
+	u8  *cb;
+	uint cb_len;
+	// IO buffer
+	u8   *io_data;
+	uint  io_len;
+	// Transaction context
+	u32 flags;
+	scsi_request_sense *sense;
+} scsi_context;
 
 void scsi_init(void);
 void scsi_reset(void);
